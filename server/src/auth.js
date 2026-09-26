@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import { db, now, newId, kvSet } from './db.js';
 import { hashPassword, verifyPassword, token, encrypt } from './crypto.js';
+import { slackExchangeCode, slackOAuthEnabled, slackRedirectUri } from './integrations/slack.js';
 import { config } from './config.js';
 import { rateLimit } from './ratelimit.js';
 
@@ -75,9 +76,9 @@ const bad = (res, msg, status = 400) => res.status(status).json({ error: msg });
 const isUniqueViolation = (err) => err?.code === '23505';
 
 export const authRoutes = Router();
-authRoutes.use(['/signup', '/login', '/github', '/github/callback'], perIp);
+authRoutes.use(['/signup', '/login', '/github', '/github/callback', '/slack/callback'], perIp);
 
-authRoutes.get('/providers', (req, res) => res.json({ github: githubOAuthEnabled() }));
+authRoutes.get('/providers', (req, res) => res.json({ github: githubOAuthEnabled(), slack: slackOAuthEnabled() }));
 
 authRoutes.post('/signup', signupPerIp, async (req, res) => {
   const email = String(req.body.email ?? '').trim().toLowerCase();
@@ -191,6 +192,52 @@ authRoutes.get('/github/callback', async (req, res) => {
     res.redirect(config.appUrl);
   } catch (err) {
     console.warn(`[auth] GitHub ${connecting ? 'connect' : 'sign-in'} failed:`, err.message);
+    res.redirect(failTo);
+  }
+});
+
+// ——— Slack OAuth (connect) ———
+// One-way flow, three steps, mirroring GitHub connect:
+//   1. GET /api/integrations/slack/authorize → slackAuthorizeUrl() below, which stores the state.
+//   2. Slack calls /api/auth/slack/callback with a code. We swap it for a bot token and park
+//      that token (encrypted) for the workspace, then send the user back to /setup?slack=choose.
+//   3. PUT /api/integrations/slack { oauth: true, channel } saves it and joins the channel.
+
+export async function slackAuthorizeUrl({ workspaceId }) {
+  const state = token(16);
+  await db.run('DELETE FROM oauth_states WHERE expires_at < ?', now());
+  await db.run(
+    'INSERT INTO oauth_states (state, expires_at, purpose, workspace_id) VALUES (?, ?, ?, ?)',
+    state,
+    new Date(Date.now() + 10 * 60_000).toISOString(),
+    'slack',
+    workspaceId ?? null,
+  );
+  const qs = new URLSearchParams({
+    client_id: config.slack.clientId,
+    scope: config.slack.scopes,
+    redirect_uri: slackRedirectUri(),
+    state,
+  });
+  return `https://slack.com/oauth/v2/authorize?${qs}`;
+}
+
+authRoutes.get('/slack/callback', async (req, res) => {
+  const { code, state } = req.query;
+  // Stored in the database so a server restart mid-connect doesn't break it. Single use.
+  const row = state ? await db.one('DELETE FROM oauth_states WHERE state = ? AND expires_at > ? RETURNING *', String(state), now()) : null;
+  const failTo = `${config.appUrl}/setup?slack=error`;
+  if (!code || !row) return res.redirect(failTo);
+  try {
+    // Check the session before spending the code: a mismatch means the user switched accounts
+    // or the session expired, and they'd have to start over from Slack anyway.
+    const user = await currentUser(req);
+    if (!user || user.workspace_id !== row.workspace_id) throw new Error('session changed during Slack connect');
+    const installed = await slackExchangeCode(String(code));
+    await kvSet(`slack_pending:${row.workspace_id}`, await encrypt({ ...installed, expiresAt: Date.now() + 30 * 60_000 }));
+    res.redirect(`${config.appUrl}/setup?slack=choose`);
+  } catch (err) {
+    console.warn('[auth] Slack connect failed:', err.message);
     res.redirect(failTo);
   }
 });
