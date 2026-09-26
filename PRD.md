@@ -20,7 +20,7 @@ TrueForge 0.2.1 was run locally and checked against this PRD. The core assumptio
 | GitHub integration | GitHub App + webhooks | **Fine-grained PAT**; GitHub App moved to stretch | A push webhook doesn't signal an incident; saves 1–2h of setup |
 | Scenarios | "Bad deploy" and "DB connection leak" | **A: code-level** (leak via bad deploy) · **B: infra-level** (cache/memory growth, no deploy) | The demo should show the agent telling code causes from infra causes |
 | Verification | Re-poll the health signal | Watch metrics over a **60s window**; symptom-only fixes report **"mitigated"** | A restart temporarily hides a leak and would give a false "resolved" |
-| Structured output | Enforced by SKILL.md prompt | Enforced by **`response_format: json_schema`** in the AgentSpec | Verified in TrueForge; stronger than prompt-only |
+| Structured output | Enforced by SKILL.md prompt | **Report tools** `submit_diagnosis` / `submit_resolution` (report-mcp), validated server-side | The approver needs the diagnosis *while* the action is paused; a final JSON answer only exists after the turn ends |
 | Fix via PR | Implied | `create_fix_pr` listed explicitly as an approval-gated write (stretch) | Opening a PR is a write action |
 | Model | Claude | **OpenAI primary, Grok (xAI) fallback** with automatic per-turn fallback | Team decision; TrueForge has no built-in fallback, so `agent/lib` provides it |
 | Timeline | By feature | By **parallel workstreams** with checkpoints | Four people build against contracts and mocks |
@@ -82,7 +82,7 @@ A trigger (the dashboard's **Simulate incident** button for MVP; alert webhooks 
 | DB health | `db-mcp` | `get_pool_stats`, `get_slow_queries`, `get_lock_waits` |
 | Service and resource state | `cloud-mcp` | `get_service_status`, `get_metrics`, `get_metrics_window` |
 
-**Output:** a structured report (root cause, category, confidence, evidence, proposed fix). TrueForge enforces its shape with `response_format` against [`contracts/incident-report.schema.json`](contracts/incident-report.schema.json).
+**Output:** a structured report (root cause, category, confidence, evidence, proposed fix). The agent submits it with the `submit_diagnosis` tool **before** calling any write tool, so it is on the dashboard next to the Approve button. The report-mcp server validates it against [`contracts/incident-report.schema.json`](contracts/incident-report.schema.json) and rejects malformed reports back to the model.
 
 **Acceptance criteria:**
 - **Scenario A:** the agent names the offending commit SHA and the symptom chain (leak → pool exhaustion → timeouts → 500s).
@@ -123,7 +123,7 @@ Trigger (Simulate button)
 Backend creates TrueForge session (metadata: incidentId) and starts a turn
    │
    ▼
-Agent investigates via read-only MCP tools ──► report: root cause + evidence
+Agent investigates via read-only MCP tools ──► submit_diagnosis: root cause + evidence + proposed fix
    │
    ▼
 Agent calls one whitelisted write tool
@@ -136,7 +136,7 @@ TrueForge pauses: tool.approval_required ──► dashboard shows "Awaiting app
    └── Approve ──► turn resumed with allow ──► MCP server executes action
                         │
                         ▼
-                  Agent watches metrics for 60s
+                  Agent: get_metrics_window (waits 60s) ──► submit_resolution
                         │
                         ▼
           resolved / mitigated / not_resolved ──► post-incident summary
@@ -154,6 +154,7 @@ TrueForge pauses: tool.approval_required ──► dashboard shows "Awaiting app
 | **db-mcp** | 7101 | Read-only DB health tools |
 | **cloud-mcp** | 7102 | Service status, metrics, Sentry errors (read) + `restart_service`, `scale_service`, `clear_cache` (approval-gated) |
 | **github-mcp** | 7103 | Commits and diffs (read) + `trigger_rollback` (approval-gated), `create_fix_pr` (stretch) |
+| **report-mcp** | 7104 | `submit_diagnosis`, `submit_resolution`: the agent's structured reports (no approval) |
 | **Backend** (Express) | 4000 | Creates sessions, derives incident status from turn events, proxies approve/reject. **No reasoning logic.** |
 | **Dashboard** (React) | 5173 | Incident feed, report, pending action with Approve/Reject, live metrics chart, deep link to the TrueForge session |
 | **Demo app** (Node, on Render) | 3000 | Service with injectable faults, `/health`, `/metrics`, admin endpoints |
@@ -191,7 +192,7 @@ Detailed interfaces:
 2. **Runtime-enforced approval.** Every write tool is listed by name in `require_approval_for_tools`. TrueForge pauses before it runs, and application code can't skip the pause by accident.
 3. **Inspectable reasoning.** Every tool call, observation and model message is in the TrueForge session history, not only the final answer.
 4. **No credentials in the model.** Render, GitHub and Sentry credentials live only in the MCP server processes.
-5. **Evidence-bound answers.** The instructions forbid claims that aren't backed by a tool result, and the report schema requires every evidence item to name its tool.
+5. **Evidence-bound answers.** The instructions forbid claims that aren't backed by a tool result, and the diagnosis schema requires at least two evidence items, each naming its tool.
 6. **Honest verification.** A fix that only treats symptoms is reported as *mitigated*, never *resolved*.
 
 ---

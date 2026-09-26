@@ -1,0 +1,22 @@
+{
+  "name": "peak-agent",
+  "private": true,
+  "type": "module",
+  "description": "P3 — PEAK agent brain: TrueForge setup, AgentSpec, instructions, report tools, mock model, evals",
+  "engines": {
+    "node": ">=22.14"
+  },
+  "scripts": {
+    "setup": "node setup.mjs",
+    "report-mcp": "node report-mcp/server.mjs",
+    "mock-model": "node mock-model.mjs",
+    "incident": "node run-incident.mjs",
+    "eval": "node eval.mjs",
+    "schema": "node gen-schema.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.0",
+    "zod-to-json-schema": "^3.25.2"
+  }
+}

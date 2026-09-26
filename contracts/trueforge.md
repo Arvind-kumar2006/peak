@@ -11,7 +11,7 @@ Owner: **P3**. Everything below was checked against a running TrueForge 0.2.1 on
 | Connects to our MCP servers | ✅ **Remote (HTTP) only** — no stdio. Verified with `agent/spike/dummy-mcp.mjs` |
 | Per-tool approval gate | ✅ `require_approval_for_tools` on each MCP server in the AgentSpec (`@write`, `@destructive`, `@all`, or tool names) |
 | Approve / deny from our backend | ✅ **verified end-to-end** (allow → tool runs; deny → tool never runs) via `agent/spike` |
-| Structured JSON final answer | ✅ AgentSpec `response_format: { type: "json_schema", json_schema: {...} }` — use `contracts/incident-report.schema.json` |
+| Structured reports | ✅ via **report-mcp tools** (`submit_diagnosis`, `submit_resolution`), not `response_format` — see below |
 | Session history = incident timeline | ✅ `GET /sessions/{id}/events`, `GET /sessions/{id}/turns/{turn}/events` |
 | Deep link to session UI | ✅ `http://localhost:8790/sessions/{sessionId}` |
 | Tag session with our incident id | ✅ `metadata: { incidentId: "..." }` on session create (string values, ≤128 chars) |
@@ -28,7 +28,11 @@ Verified with the scripted mock model (`agent/spike/mock-model.mjs`). The gate i
 3. All API responses are wrapped: `{ "data": ... }`.
 4. Event list `limit` max is **100**.
 5. Node **≥ 22.14** required.
-6. Default agent config enables `dynamic_sub_agents`, `ask_user_questions`, `generative_ui`. For deterministic demos, consider disabling sub-agents and ask_user_questions in `config`.
+6. Default agent config enables `dynamic_sub_agents`, `ask_user_questions`, `generative_ui`. For deterministic demos, `agent/agent-spec.mjs` disables sub-agents and ask_user_questions in `config`.
+7. **Session events are wrapped** as `{ turn_id, event }` and listed newest-first (turn events are not wrapped). `listSessionEvents()` in `agent/lib/trueforge-client.mjs` unwraps and sorts them.
+8. **A paused turn also ends with `turn.done`** (`status: "done"`, `output: null`, `required_actions: [tool.approval_required]`). Check for `tool.approval_required` first.
+9. Tool calls live in `model.message` events: `tool_calls[].{ id, function.name, function.arguments (JSON string), tool_info.server_name }`; results in `tool.response` events keyed by `tool_call_id`.
+10. Default MCP request timeout is **4 minutes** (`MCP_REQUEST_TIMEOUT_MS`), so a 60s blocking `get_metrics_window` is safe.
 
 ## API cheat sheet (base `/api/v1`)
 
@@ -106,7 +110,7 @@ List write tools **by name** (not only `@destructive`) so the gate never depends
 - **Final answer:** `turn.done` → `state.output` is the final `model.message`: `{ type: "model.message", content: "<text or report JSON>", thread_id: "main", finish_reason: "stop", ... }`. No need to scan the event list.
 - **Denied tool:** the agent receives a tool result `{"error":"User denied tool call: <reason>"}` and continues the turn (it should wrap up, not retry).
 - **Thread id:** the main agent thread is `"main"`.
-- ⚠️ Still to capture for P4: where the pending tool call's **name + args** appear (the `model.message` event referenced by `tool_calls[].source_event_id`). Fetch that event from the turn's event list to show "pending action + args" on the dashboard.
+- **Pending tool name + args:** the `model.message` event referenced by `tool_calls[].source_event_id` holds them. `getPendingAction()` in the client returns them ready to display.
 
 ## Mock model (no API key, deterministic)
 
@@ -121,3 +125,16 @@ PUT /settings/model-providers
 Use it for backend/dashboard development and CI: free, instant, same result every time. P3 can extend the script to replay Scenario A and B.
 
 MCP tools appear to the model under their **plain names** (`restart_service`, not prefixed) when `preload: true`.
+
+## Why report tools instead of `response_format`
+
+The final JSON answer only exists when the turn **finishes**, but the approver needs the diagnosis while the turn is **paused** on the write tool. So the agent calls `report-mcp.submit_diagnosis` before the action and `submit_resolution` after verifying. The tool arguments are validated by Zod on the server (`agent/report-schema.mjs`), so a malformed report returns an error the model can fix. It works the same on OpenAI, Grok and the mock model, and no strict-schema quirks are involved.
+
+Backend usage (`agent/lib/trueforge-client.mjs`):
+
+```js
+const { diagnosis, resolution } = await tf.getReports(sessionId);  // latest submitted args, or null
+const pending = await tf.getPendingAction(session, paused);          // [{ tool, server, args, toolCallId, threadId }]
+const calls = await tf.listToolCalls(sessionId);                    // full timeline: tool, args, result, at
+const session = await tf.loadSession(sessionId);                    // re-attach after a backend restart
+```

@@ -90,6 +90,10 @@ and never commits, giving `db-mcp` a second independent source of evidence.
 > 3. **`process.memoryMB` is live memory (`heapUsed + external`), not `rss`** — the allocator does not return freed pages on every platform, so `rss` can stay high after a real fix and the contract's "below 60% of limit" bar would never be met. Real `rss` is in `_diag.rssMB`. P2 reads the top-level field.
 > 4. **`get_metrics_window` has no defined data source.** Recommendation: P2 samples `/metrics` every 10s and caches, keeping the stability check independent of the app being measured.
 > 5. **`errorRate` 60s window + 60s stability window = up to ~2min to *resolved*.** If the demo feels slow, `ERROR_RATE_WINDOW_SEC=20` is a one-line change.
+>
+> **Status (P3, 2026-09-26):** #2 settled in `scenarios.md` (quiet window, mocks enforce it). #4 settled: `cloud-mcp` background sampler + `waitSeconds`. #1, #3, #5 still open.
+>
+> ⚠️ **PR #2 merged the Scenario A bad commit into `main`** — every copy of `main` leaked the pool within ~60s. Fixed on the `Vaibhav` branch (healthy `reconcileRecentOrders` restored). The bad commit stays on `p1/scenario-a-bad-commit` for the live demo. **P1: keep `main` healthy; deploy the bad branch only during the demo.**
 
 
 ---
@@ -107,7 +111,11 @@ and never commits, giving `db-mcp` a second independent source of evidence.
 - [x] Every response includes `source` + `observedAt`
 - [x] `MOCK=1` mode on every server — mocks match Scenario A and B signals
 - [x] Register all three in TrueForge; confirm `GET /api/v1/mcp-servers/{name}/tools` lists them
-- [ ] Swap mocks → real APIs once P1 is deployed
+- [x] Mock fixes (P3, reviewed with P2): shared mock world so write tools actually change metrics (`mcp/_shared/mockState.js`, `POST /mock/state`); `get_commit_diff` accepts short SHAs; commit times relative to the incident + `sinceMinutes` honoured; evidence matches the scenarios (no slow queries in B, no invented lock waits in A); mock diff = P1's real commit; P1's measured numbers
+- [x] Real mode returns explicit "not implemented" errors instead of zeros
+- [x] Real mode: `get_metrics`, `get_metrics_window` (background sampler + `waitSeconds`), `clear_cache` against the demo app
+- [ ] Real mode: Render API (`get_service_status`, `restart_service`, `scale_service`, `trigger_rollback`)
+- [ ] Real mode: GitHub API (`list_recent_commits`, `get_commit_diff`), Sentry API (`get_recent_errors`), Postgres (`db-mcp`, needs a **direct** `DATABASE_URL`)
 
 **Deliverable by ~6h:** all three servers running in mock mode and visible in TrueForge. ✅ DONE
 
@@ -118,21 +126,25 @@ and never commits, giving `db-mcp` a second independent source of evidence.
 **Contracts:** [`trueforge.md`](contracts/trueforge.md), [`incident-report.schema.json`](contracts/incident-report.schema.json) · **Depends on:** P2's mock servers.
 
 - [x] Live approval spike (Phase 0)
-- [ ] Setup script that registers model provider + 3 MCP servers + the `incident-investigator` agent via the API (so anyone can recreate TrueForge state in one command)
-- [ ] AgentSpec: all MCP servers, write tools in `require_approval_for_tools`, `response_format` = report schema, disable `dynamic_sub_agents` / `ask_user_questions` for determinism
-- [ ] SKILL.md / instructions:
-  - [ ] Only cite evidence retrieved from tools; every claim names its tool
-  - [ ] Distinguish code-level vs infra-level cause (check commits in incident window)
-  - [ ] Propose exactly one whitelisted action
-  - [ ] After action: `get_metrics_window` for 60s → resolved / mitigated / not_resolved
-- [ ] Pin model ids (`OPENAI_MODEL`, `XAI_MODEL`)
-- [ ] Run the eval on **both** providers — Grok must also pass, since it's the fallback
-- [x] Final answer = `turn.done.state.output` (documented in `trueforge.md`)
-- [ ] Document where pending tool **name + args** live (the `source_event_id` event) for P4
-- [ ] Extend `mock-model.mjs` to replay Scenario A and B (so P4 can demo without spending tokens)
-- [ ] Eval script: run each scenario 10+ times, log accuracy
+- [x] Model providers: OpenAI → Grok fallback (`agent/lib/providers.mjs`, `trueforge-client.mjs`)
+- [x] `npm run setup` — registers providers, 4 MCP servers, and the `incident-investigator` agent in one command
+- [x] AgentSpec (`agent/agent-spec.mjs`): write tools listed by name for approval, `create_fix_pr` disabled, sub-agents / ask-user / generative UI / web search off
+- [x] **Report tools** (`report-mcp`, port 7104): `submit_diagnosis` before the action, `submit_resolution` after verifying. Replaces `response_format` — the diagnosis is available *while* the action awaits approval (see `contracts/trueforge.md`)
+- [x] Instructions (`agent/instructions.md`):
+  - [x] Only cite evidence retrieved from tools; every claim names its tool
+  - [x] Distinguish code-level vs infra-level cause (check commits in incident window)
+  - [x] Propose exactly one whitelisted action; call out the trap fix for each scenario
+  - [x] After action: `get_metrics_window {seconds: 60, waitSeconds: 60}` → resolved / mitigated / not_resolved / rejected
+- [x] Client helpers for P4: `getReports`, `getPendingAction` (tool name + args), `listToolCalls` (timeline), `loadSession`
+- [x] Scenario-aware mock model (`agent/mock-model.mjs`) — follows the runbook on real tool results; `MOCK_BEHAVIOR=trap` picks the wrong fix
+- [x] `run-incident.mjs` (one incident from the CLI) and `eval.mjs` (N runs × scenario × provider, graded, saved to `eval-results/`)
+- [x] `scripts/dev-mock-stack.sh` — whole mock stack in one command (for P4)
+- [x] Verified on the mock stack: A → rollback → resolved; B → clear_cache → resolved; deny → tool never runs → rejected; trap A → mitigated; trap B → not_resolved; eval grader fails the trap runs
+- [ ] **Real-model runs** — needs `OPENAI_API_KEY` / `XAI_API_KEY`; pin `OPENAI_MODEL` / `XAI_MODEL`
+- [ ] Eval ≥ 9/10 per scenario on **both** providers (`node --env-file=../.env eval.mjs --providers openai` then `--providers xai`); tune `instructions.md` on failures
+- [ ] Re-run the eval against P2's real-mode servers once P1 is deployed
 
-**Deliverable by ~8h:** agent diagnoses Scenario A correctly against mocks and pauses on `trigger_rollback`.
+**Deliverable by ~8h:** agent diagnoses Scenario A correctly against mocks and pauses on `trigger_rollback`. ✅ DONE with the mock model — pending a real-model run.
 
 ---
 
@@ -140,7 +152,8 @@ and never commits, giving `db-mcp` a second independent source of evidence.
 
 **Contract:** [`backend-api.md`](contracts/backend-api.md) · **Depends on:** contracts only — use a fake incident JSON until P3 is ready.
 
-- [ ] Use `agent/lib/trueforge-client.mjs` (`createSession`, `start`, `approve`, `reject`) — handles model fallback for you
+- [ ] Use `agent/lib/trueforge-client.mjs` (`createSession`, `start`, `approve`, `reject`, `getReports`, `getPendingAction`) — see the sketch in `contracts/backend-api.md` and the working CLI in `agent/run-incident.mjs`
+- [ ] Develop against `./scripts/dev-mock-stack.sh` (no keys needed)
 - [ ] Express backend (port 4000):
   - [ ] `POST /api/incidents` — inject scenario + create TrueForge session + start turn
   - [ ] `GET /api/incidents`, `GET /api/incidents/:id` — status derived from turn events
@@ -161,7 +174,7 @@ and never commits, giving `db-mcp` a second independent source of evidence.
 | Hour | Milestone | Done? |
 |---|---|---|
 | 2 | Contracts frozen, live approval spike passed | spike ✅ · contracts ⏳ |
-| 8 | Scenario A end-to-end **with mocks**: trigger → diagnosis → approve → mock execute | [ ] |
+| 8 | Scenario A end-to-end **with mocks**: trigger → diagnosis → approve → mock execute | agent side ✅ (CLI) · backend/dashboard ⏳ |
 | 16 | Scenario A end-to-end **on real infra**, real rollback, verified recovery | [ ] |
 | 24 | Scenario B works — **FEATURE FREEZE** | [ ] |
 | 30 | Both scenarios pass 10/10 runs; backup video recorded | [ ] |

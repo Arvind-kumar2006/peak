@@ -1,103 +1,91 @@
-import { createMcpServer, createHttpServer, withMetadata, mockMode, mockScenario } from '../_shared/index.js';
+import { createMcpServer, createHttpServer, ok, notImplemented, mockMode } from '../_shared/index.js';
+import { getState, recordAction, BAD_SHA, GOOD_SHA } from '../_shared/mockState.js';
+import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
 const PORT = Number(process.env.PORT ?? 7103);
 const name = 'github-mcp';
 
+// Real diff of the Scenario A commit (5a824ff), so tuning on mocks matches the live demo.
+const BAD_DIFF = readFileSync(new URL('./fixtures/scenario-a-bad-commit.diff', import.meta.url), 'utf8');
+
+const minutesBefore = (iso, minutes) => new Date(Date.parse(iso) - minutes * 60_000).toISOString();
+
+// Commit history relative to when the incident started. Scenario A: the bad commit landed
+// 12 minutes before. Scenario B: nothing for over a day (the "quiet window" P1 asked for).
+function mockCommits() {
+  const state = getState();
+  const history = [
+    { sha: GOOD_SHA, message: 'docs(demo-app): README with run steps, verified scenario numbers, and per-owner handoff notes', author: 'praveen', minutesAgo: 26 * 60, filesChanged: ['demo-app/README.md'], diff: '' },
+    { sha: '267f0460000000000000000000000000000000000', message: 'fix(db): never let a reaped connection kill the process, and reap orphans server-side', author: 'praveen', minutesAgo: 27 * 60, filesChanged: ['demo-app/src/db/pool.js', 'demo-app/src/reconciler.js'], diff: '' },
+  ];
+  if (state.scenario === 'A') {
+    history.unshift({ sha: BAD_SHA, message: 'perf: reuse client for order lookup', author: 'praveen', minutesAgo: 12, filesChanged: ['demo-app/src/db/orders.js'], diff: BAD_DIFF });
+  }
+  return history.map(({ minutesAgo, ...c }) => ({ ...c, timestamp: minutesBefore(state.startedAt, minutesAgo) }));
+}
+
+function findCommit(sha) {
+  const needle = sha.trim().toLowerCase();
+  if (needle.length < 7) return null;
+  return mockCommits().find((c) => c.sha.startsWith(needle)) ?? null;
+}
+
 function buildServer() {
   const server = createMcpServer(name);
-
   const isMock = mockMode();
-  const scenario = mockScenario;
-
-  const badSha = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0';
-  const goodSha = 'f0e1d2c3b4a59687789a0b1c2d3e4f5a6b7c8d9e';
-  const olderSha = 'c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0a1b2';
-
-  const mockCommits = (scenario === 'A')
-    ? [
-        { sha: badSha, message: 'perf: reuse client for order lookup', author: 'dev@example.com', timestamp: '2026-09-26T10:00:00Z', filesChanged: ['src/routes/orders.js'] },
-        { sha: goodSha, message: 'feat: add product filtering', author: 'dev@example.com', timestamp: '2026-09-25T14:30:00Z', filesChanged: ['src/routes/products.js'] },
-        { sha: olderSha, message: 'fix: handle null user in auth', author: 'dev@example.com', timestamp: '2026-09-24T09:15:00Z', filesChanged: ['src/middleware/auth.js'] },
-      ]
-    : [
-        { sha: goodSha, message: 'feat: add product filtering', author: 'dev@example.com', timestamp: '2026-09-25T14:30:00Z', filesChanged: ['src/routes/products.js'] },
-        { sha: olderSha, message: 'fix: handle null user in auth', author: 'dev@example.com', timestamp: '2026-09-24T09:15:00Z', filesChanged: ['src/middleware/auth.js'] },
-      ];
-
-  const leakyDiff = `diff --git a/src/routes/orders.js b/src/routes/orders.js
-index 1234567..abcdefg 100644
---- a/src/routes/orders.js
-+++ b/src/routes/orders.js
-@@ -10,7 +10,7 @@ export async function getOrders(req, res) {
-   const client = await pool.connect()
-   try {
-     const result = await client.query('SELECT * FROM orders WHERE user_id = $1', [req.user.id])
--    client.release()
-+    // client.release() - temporarily commented for perf testing
-     return res.json(result.rows)
-   } catch (err) {
-     client.release()
-`;
 
   server.registerTool(
     'list_recent_commits',
     {
-      description: 'Lists recent commits in the repository',
-      inputSchema: { sinceMinutes: z.number().int().positive().max(1440).default(120) },
+      description: 'Lists commits on the deployed branch within the last `sinceMinutes` minutes, newest first',
+      inputSchema: { sinceMinutes: z.number().int().positive().max(1440 * 7).default(120) },
       annotations: { readOnlyHint: true },
     },
     async ({ sinceMinutes = 120 }) => {
-      let result;
-      if (isMock) {
-        result = { commits: mockCommits };
-      } else {
-        result = { commits: [] };
-      }
-      return {
-        content: [{ type: 'text', text: JSON.stringify(withMetadata(result, 'github-mcp.list_recent_commits')) }]
-      };
+      if (!isMock) return notImplemented('github-mcp.list_recent_commits');
+      const cutoff = Date.now() - sinceMinutes * 60_000;
+      const commits = mockCommits()
+        .filter((c) => Date.parse(c.timestamp) >= cutoff)
+        .map(({ diff, ...c }) => c);
+      return ok({ sinceMinutes, commits }, 'github-mcp.list_recent_commits');
     }
   );
 
   server.registerTool(
     'get_commit_diff',
     {
-      description: 'Returns the diff for a specific commit',
-      inputSchema: { sha: z.string().min(1) },
+      description: 'Returns the diff for a commit. Accepts a full SHA or a prefix of at least 7 characters',
+      inputSchema: { sha: z.string().min(7) },
       annotations: { readOnlyHint: true },
     },
     async ({ sha }) => {
-      let result;
-      if (isMock) {
-        if (sha === badSha) {
-          result = { sha, message: 'perf: reuse client for order lookup', files: [{ path: 'src/routes/orders.js', patch: leakyDiff }] };
-        } else {
-          result = { sha, message: 'other commit', files: [] };
-        }
-      } else {
-        result = { sha, message: '', files: [] };
+      if (!isMock) return notImplemented('github-mcp.get_commit_diff');
+      const c = findCommit(sha);
+      if (!c) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: `no commit matching "${sha}"`, source: 'github-mcp.get_commit_diff' }) }] };
       }
-      return {
-        content: [{ type: 'text', text: JSON.stringify(withMetadata(result, 'github-mcp.get_commit_diff')) }]
-      };
+      const files = c.filesChanged.map((path) => ({ path, patch: c.diff }));
+      return ok({ sha: c.sha, message: c.message, author: c.author, timestamp: c.timestamp, files }, 'github-mcp.get_commit_diff');
     }
   );
 
   server.registerTool(
     'trigger_rollback',
     {
-      description: 'Triggers a rollback to a previous deploy via Render API. Destructive: requires human approval.',
+      description: 'Rolls the service back to a previous deploy via the Render API (use previousDeploy.id from get_service_status). Destructive: requires human approval.',
       inputSchema: { toDeployId: z.string().min(1), reason: z.string() },
       annotations: { destructiveHint: true },
     },
     async ({ toDeployId, reason }) => {
-      const rollbackDeployId = isMock ? 'dep-rollback-mock' : undefined;
-      const result = { ok: true, rollbackDeployId, at: new Date().toISOString() };
+      if (!isMock) return notImplemented('github-mcp.trigger_rollback');
+      const known = getState().scenario === 'A' ? ['dep-good'] : ['dep-older'];
+      if (!known.includes(toDeployId)) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: `unknown or invalid rollback target "${toDeployId}"`, validTargets: known }) }] };
+      }
       console.log(`[${name}] trigger_rollback EXECUTED — toDeployId: ${toDeployId}, reason: ${reason}`);
-      return {
-        content: [{ type: 'text', text: JSON.stringify(withMetadata(result, 'github-mcp.trigger_rollback')) }]
-      };
+      recordAction('trigger_rollback', { toDeployId, reason });
+      return ok({ ok: true, rollbackDeployId: 'dep-rollback-1', at: new Date().toISOString() }, 'github-mcp.trigger_rollback');
     }
   );
 
@@ -108,12 +96,10 @@ index 1234567..abcdefg 100644
       inputSchema: { title: z.string(), body: z.string(), files: z.array(z.object({ path: z.string(), content: z.string() })) },
       annotations: { destructiveHint: true },
     },
-    async ({ title, body, files }) => {
-      const result = { ok: true, prUrl: isMock ? 'https://github.com/owner/repo/pull/123' : undefined };
+    async ({ title }) => {
       console.log(`[${name}] create_fix_pr EXECUTED — title: ${title}`);
-      return {
-        content: [{ type: 'text', text: JSON.stringify(withMetadata(result, 'github-mcp.create_fix_pr')) }]
-      };
+      if (!isMock) return notImplemented('github-mcp.create_fix_pr');
+      return ok({ ok: true, prUrl: 'https://github.com/Arvind-kumar2006/Peak/pull/999' }, 'github-mcp.create_fix_pr');
     }
   );
 

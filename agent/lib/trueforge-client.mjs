@@ -91,6 +91,67 @@ export function createClient({ baseUrl = process.env.TRUEFORGE_URL ?? 'http://lo
 
   const start = (session, content) => runTurn(session, [{ type: 'user.message', content }]);
 
+  // Re-attach to an existing session (e.g. after a backend restart) — only the id needs storing.
+  async function loadSession(sessionId) {
+    const s = await api('GET', `/sessions/${sessionId}`);
+    const index = Math.max(0, providers.findIndex((p) => p.name === s.metadata?.provider));
+    return { id: s.id, spec: s.agent.spec, providerIndex: index, metadata: s.metadata };
+  }
+
+  // All session events, oldest first (the API pages newest-first, 100 at a time).
+  async function listSessionEvents(sessionId) {
+    const pages = [];
+    let token;
+    do {
+      const qs = new URLSearchParams({ limit: '100', ...(token ? { page_token: token } : {}) });
+      const res = await fetch(`${baseUrl}/api/v1/sessions/${sessionId}/events?${qs}`);
+      if (!res.ok) throw new Error(`GET events → ${res.status}: ${await res.text()}`);
+      const body = await res.json();
+      // Session events are wrapped as { turn_id, event } (turn events are not).
+      pages.push(body.data.map((item) => ({ ...item.event, turn_id: item.turn_id })));
+      token = body.pagination?.next_page_token;
+    } while (token);
+    return pages.flat().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+
+  // Every tool call in the session: { id, tool, server, args, result, isError, at }.
+  async function listToolCalls(sessionId) {
+    const events = await listSessionEvents(sessionId);
+    const responses = new Map(events.filter((e) => e.type === 'tool.response').map((e) => [e.tool_call_id, e]));
+    const calls = [];
+    for (const e of events) {
+      if (e.type !== 'model.message' || !e.tool_calls) continue;
+      for (const tc of e.tool_calls) {
+        const r = responses.get(tc.id);
+        calls.push({
+          id: tc.id,
+          tool: tc.function.name,
+          server: tc.tool_info?.server_name ?? null,
+          args: safeJson(tc.function.arguments),
+          result: r ? safeJson(r.content) : null,
+          at: e.created_at,
+        });
+      }
+    }
+    return calls;
+  }
+
+  // The write tool waiting for approval, with its arguments (for the Approve screen).
+  async function getPendingAction(session, paused) {
+    if (paused?.kind !== 'approval') return null;
+    const calls = await listToolCalls(session.id);
+    const ids = new Set(paused.toolCalls.map((t) => t.id));
+    const pending = calls.filter((c) => ids.has(c.id));
+    return pending.map(({ id, tool, server, args }) => ({ toolCallId: id, threadId: paused.threadId, tool, server, args }));
+  }
+
+  // Latest submit_diagnosis / submit_resolution arguments — the structured incident report.
+  async function getReports(sessionId) {
+    const calls = await listToolCalls(sessionId);
+    const last = (tool) => calls.filter((c) => c.tool === tool && c.args && !c.result?.error).at(-1)?.args ?? null;
+    return { diagnosis: last('submit_diagnosis'), resolution: last('submit_resolution') };
+  }
+
   function decide(session, paused, decision, reason) {
     return runTurn(
       session,
@@ -106,6 +167,11 @@ export function createClient({ baseUrl = process.env.TRUEFORGE_URL ?? 'http://lo
 
   return {
     api,
+    loadSession,
+    listSessionEvents,
+    listToolCalls,
+    getPendingAction,
+    getReports,
     registerProviders,
     registerMcpServer,
     createSession,
@@ -114,4 +180,13 @@ export function createClient({ baseUrl = process.env.TRUEFORGE_URL ?? 'http://lo
     reject: (session, paused, reason) => decide(session, paused, 'deny', reason),
     sessionUrl: (session) => `${baseUrl}/sessions/${session.id}`,
   };
+}
+
+function safeJson(v) {
+  if (typeof v !== 'string') return v;
+  try {
+    return JSON.parse(v);
+  } catch {
+    return v;
+  }
 }
