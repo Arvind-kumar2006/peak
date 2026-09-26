@@ -7,7 +7,7 @@ PEAK watches your production services. When one breaks, an AI agent reads the Se
 ```
  Health URL ─┐                        ┌──────────── TrueForge ────────────┐
  Sentry ─────┼─▶ Monitor ─▶ Incident ─▶│ agent loop · approval gate · model │
-             │   (every 10s)           │ fallback (Groq/Gemini/OpenAI/xAI) │
+             │   (every 10s)           │ fallback (TrueFoundry/Groq/…) │
              │                         └───────────────┬───────────────────┘
              │                                         │ MCP (/mcp/<token>)
              │                ┌────────────────────────▼───────────────────┐
@@ -38,7 +38,7 @@ Requires Node ≥ 22.14.
 
 ```bash
 npm install
-cp .env.example .env        # add at least one model key (GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY or XAI_API_KEY)
+cp .env.example .env        # add at least one model key (TRUEFOUNDRY_API_KEY, GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY or XAI_API_KEY)
 npm run dev                 # TrueForge :8790 + Groq proxy :7310 + server :4000 + dashboard :5173
 ```
 
@@ -75,7 +75,7 @@ server/src/
     tools.js            MCP tools the agent calls
     runner.js           TrueForge sessions, approval pause/resume, restart recovery
     trueforge.js        TrueForge API client with provider fallback
-    providers.js        Groq → Gemini → OpenAI → xAI
+    providers.js        TrueFoundry gateway → Groq → Gemini → OpenAI → xAI
 server/model/groq-proxy.js   needed for Groq (TrueForge 0.2.1 sends fields Groq rejects)
 web/src/                React dashboard: login, connections, services, incidents
 ```

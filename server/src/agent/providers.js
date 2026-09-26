@@ -8,6 +8,18 @@ export function modelRef(provider) {
 }
 
 const DEFINITIONS = {
+  // TrueFoundry AI Gateway (OpenAI-compatible) — registered in TrueForge as custom provider "gpt-model".
+  truefoundry: () => ({
+    name: 'gpt-model',
+    apiKey: process.env.TRUEFOUNDRY_API_KEY,
+    manifest: {
+      type: 'custom',
+      name: 'gpt-model',
+      base_url: process.env.TRUEFOUNDRY_BASE_URL ?? 'https://gateway.truefoundry.ai',
+      auth: { api_key: process.env.TRUEFOUNDRY_API_KEY },
+      models: [{ model_id: process.env.TRUEFOUNDRY_MODEL ?? 'vm-polaris/openai', name: 'peak-model', properties: {} }],
+    },
+  }),
   // Groq (groq.com, keys start with gsk_) — fast hosted open models, OpenAI-compatible.
   // Not to be confused with Grok (xAI, keys start with xai-), below.
   groq: () => ({
@@ -55,9 +67,9 @@ const DEFINITIONS = {
   }),
 };
 
-// MODEL_PROVIDERS="groq,gemini,openai,xai" (default). Providers without an API key are skipped.
+// MODEL_PROVIDERS="truefoundry,groq,gemini,openai,xai" (default). Providers without an API key are skipped.
 export function providersFromEnv() {
-  const order = (process.env.MODEL_PROVIDERS ?? 'groq,gemini,openai,xai').split(',').map((s) => s.trim()).filter(Boolean);
+  const order = (process.env.MODEL_PROVIDERS ?? 'truefoundry,groq,gemini,openai,xai').split(',').map((s) => s.trim()).filter(Boolean);
   const providers = [];
   for (const id of order) {
     const def = DEFINITIONS[id];
@@ -70,6 +82,6 @@ export function providersFromEnv() {
     p.model = p.manifest.models[0];
     providers.push(p);
   }
-  if (providers.length === 0) throw new Error('No model provider available — set GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY and/or XAI_API_KEY');
+  if (providers.length === 0) throw new Error('No model provider available — set TRUEFOUNDRY_API_KEY, GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY and/or XAI_API_KEY');
   return providers;
 }
