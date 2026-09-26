@@ -8,6 +8,30 @@ export function modelRef(provider) {
 }
 
 const DEFINITIONS = {
+  // Groq (groq.com, keys start with gsk_) — fast hosted open models, OpenAI-compatible.
+  // Not to be confused with Grok (xAI, keys start with xai-), below.
+  groq: () => ({
+    name: 'groq',
+    apiKey: process.env.GROQ_API_KEY,
+    manifest: {
+      type: 'custom',
+      name: 'groq',
+      // Through agent/model-proxy.mjs: TrueForge replays `reasoning_content`, which Groq rejects.
+      base_url: process.env.GROQ_BASE_URL ?? 'http://localhost:7310/v1',
+      auth: { api_key: process.env.GROQ_API_KEY },
+      models: [{ model_id: process.env.GROQ_MODEL ?? 'openai/gpt-oss-120b', name: 'peak-model', properties: {} }],
+    },
+  }),
+  // Google Gemini — native TrueForge provider type.
+  gemini: () => ({
+    name: 'google-gemini',
+    apiKey: process.env.GEMINI_API_KEY,
+    manifest: {
+      type: 'google-gemini',
+      auth: { api_key: process.env.GEMINI_API_KEY },
+      models: [{ model_id: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash', name: 'peak-model', properties: {} }],
+    },
+  }),
   openai: () => ({
     name: 'openai',
     apiKey: process.env.OPENAI_API_KEY,
@@ -43,9 +67,9 @@ const DEFINITIONS = {
   }),
 };
 
-// MODEL_PROVIDERS="openai,xai" (default). Providers without an API key are skipped.
+// MODEL_PROVIDERS="groq,gemini,openai,xai" (default). Providers without an API key are skipped.
 export function providersFromEnv() {
-  const order = (process.env.MODEL_PROVIDERS ?? 'openai,xai').split(',').map((s) => s.trim()).filter(Boolean);
+  const order = (process.env.MODEL_PROVIDERS ?? 'groq,gemini,openai,xai').split(',').map((s) => s.trim()).filter(Boolean);
   const providers = [];
   for (const id of order) {
     const def = DEFINITIONS[id];
@@ -58,6 +82,6 @@ export function providersFromEnv() {
     p.model = p.manifest.models[0];
     providers.push(p);
   }
-  if (providers.length === 0) throw new Error('No model provider available — set OPENAI_API_KEY and/or XAI_API_KEY, or MODEL_PROVIDERS=mock');
+  if (providers.length === 0) throw new Error('No model provider available — set GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY and/or XAI_API_KEY, or MODEL_PROVIDERS=mock');
   return providers;
 }

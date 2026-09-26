@@ -29,7 +29,10 @@ for (const s of MCP_SERVERS) {
 }
 
 console.log(`▶ Agent "${AGENT_NAME}"`);
-const manifest = { ...buildAgentSpec(), model: { name: modelRef(providers[0]) } };
+const manifest = {
+  ...buildAgentSpec(),
+  model: { name: modelRef(providers[0]), ...(providers[0].params ? { params: providers[0].params } : {}) },
+};
 const existing = (await tf.api('GET', '/agents')).find((a) => a.name === AGENT_NAME);
 if (existing) {
   await tf.api('PUT', `/agents/${existing.id}`, { description: 'PEAK production incident responder', manifest });

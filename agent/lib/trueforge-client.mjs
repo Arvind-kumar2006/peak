@@ -32,7 +32,7 @@ export function createClient({ baseUrl = process.env.TRUEFORGE_URL ?? 'http://lo
   // spec: AgentSpec without `model` — the client fills it in from the provider list.
   async function createSession(spec, metadata = {}) {
     const session = await api('POST', '/sessions', {
-      agent: { spec: { ...spec, model: { ...spec.model, name: modelRef(providers[0]) } } },
+      agent: { spec: { ...spec, model: modelFor(providers[0], spec.model) } },
       metadata: { ...metadata, provider: providers[0].name },
     });
     return { id: session.id, spec: session.agent.spec, providerIndex: 0 };
@@ -55,7 +55,7 @@ export function createClient({ baseUrl = process.env.TRUEFORGE_URL ?? 'http://lo
 
   async function switchProvider(session, index) {
     const provider = providers[index];
-    const spec = { ...session.spec, model: { ...session.spec.model, name: modelRef(provider) } };
+    const spec = { ...session.spec, model: modelFor(provider, session.spec.model) };
     await api('PATCH', `/sessions/${session.id}`, { agent: { spec }, metadata: { provider: provider.name } });
     session.spec = spec;
     session.providerIndex = index;
@@ -189,4 +189,11 @@ function safeJson(v) {
   } catch {
     return v;
   }
+}
+
+// AgentSpec model for a provider. Provider-specific params (e.g. Groq's include_reasoning)
+// replace the previous provider's, so a fallback never inherits settings it would reject.
+function modelFor(provider, base = {}) {
+  const { params: _previous, ...rest } = base;
+  return { ...rest, name: modelRef(provider), ...(provider.params ? { params: provider.params } : {}) };
 }

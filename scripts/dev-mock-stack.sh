@@ -20,6 +20,7 @@ start cloud-mcp  node "$ROOT/mcp/cloud/server.js"
 start github-mcp node "$ROOT/mcp/github/server.js"
 start report-mcp node "$ROOT/agent/report-mcp/server.mjs"
 start mock-model node "$ROOT/agent/mock-model.mjs"
+start model-proxy node "$ROOT/agent/model-proxy.mjs"   # Groq compatibility (real-model runs)
 start trueforge  "$ROOT/scripts/start-trueforge.sh"
 
 echo "waiting for TrueForge on :8790 ..."

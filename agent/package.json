@@ -10,6 +10,7 @@
     "setup": "node setup.mjs",
     "report-mcp": "node report-mcp/server.mjs",
     "mock-model": "node mock-model.mjs",
+    "model-proxy": "node model-proxy.mjs",
     "incident": "node run-incident.mjs",
     "eval": "node eval.mjs",
     "schema": "node gen-schema.mjs"
