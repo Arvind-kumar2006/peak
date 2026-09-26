@@ -14,11 +14,18 @@ let pool = null;
 let waiting = 0;
 
 /**
- * Clients this process deliberately failed to release (the injected leak).
- * Tracked so POST /admin/reset can actually reclaim them instead of leaving the
- * pool permanently exhausted between rehearsals.
+ * Every client handed out, with the time it was checked out.
+ *
+ * Tracking all checkouts (not just deliberately leaked ones) is what lets
+ * POST /admin/reset drain the pool no matter which code path stranded a client
+ * — including the bad commit's reconciler, which never registers anything.
+ * Reclamation is gated on a grace period so a reset during live traffic cannot
+ * yank a client out from under an in-flight query: no legitimate query here
+ * takes longer than LEAK_GRACE_MS, so anything older is stranded by definition.
  */
-const leaked = new Set();
+const checkedOut = new Map();
+
+const LEAK_GRACE_MS = Number(process.env.LEAK_GRACE_MS || 30000);
 
 export class PoolExhaustedError extends Error {
   constructor(total, max, cause) {
@@ -57,16 +64,13 @@ function isConnectTimeout(err) {
   return /timeout exceeded when trying to connect|timeout when trying to connect/i.test(msg);
 }
 
-/**
- * Acquire a client, or fail fast with a legible error once the pool is dry.
- * `registerLeak` is used only by the injected-fault code path.
- */
-export async function acquire({ registerLeak = false } = {}) {
+/** Acquire a client, or fail fast with a legible error once the pool is dry. */
+export async function acquire() {
   const p = getPool();
   waiting += 1;
   try {
     const client = await p.connect();
-    if (registerLeak) leaked.add(client);
+    checkedOut.set(client, Date.now());
     return client;
   } catch (err) {
     if (isConnectTimeout(err)) {
@@ -81,7 +85,7 @@ export async function acquire({ registerLeak = false } = {}) {
 /** Release a client we own. Safe to call twice. */
 export function release(client) {
   if (!client) return;
-  leaked.delete(client);
+  checkedOut.delete(client);
   try {
     client.release();
   } catch {
@@ -89,24 +93,31 @@ export function release(client) {
   }
 }
 
-export function leakedCount() {
-  return leaked.size;
+/** Clients held longer than the grace period — i.e. genuinely stranded. */
+export function leakedCount(graceMs = LEAK_GRACE_MS) {
+  const cutoff = Date.now() - graceMs;
+  let n = 0;
+  for (const at of checkedOut.values()) if (at < cutoff) n += 1;
+  return n;
 }
 
 /**
- * Reclaim every leaked client: roll back the dangling transaction, then hand
+ * Reclaim every stranded client: roll back the dangling transaction, then hand
  * the connection back to the pool. This is what makes /admin/reset fast
- * (contract: < 5s) and repeatable.
+ * (contract: < 5s) and repeatable, and it works against the Scenario A bad
+ * commit even though that code never registers anything.
  */
-export async function reclaimLeaked() {
-  const clients = [...leaked];
+export async function reclaimLeaked(graceMs = LEAK_GRACE_MS) {
+  const cutoff = Date.now() - graceMs;
+  const stranded = [...checkedOut.entries()].filter(([, at]) => at < cutoff);
   let reclaimed = 0;
-  for (const client of clients) {
+  for (const [client] of stranded) {
     try {
       await client.query('ROLLBACK');
     } catch {
       /* connection may already be gone */
     }
+    checkedOut.delete(client);
     try {
       client.release();
       reclaimed += 1;
@@ -114,9 +125,8 @@ export async function reclaimLeaked() {
       /* ignore */
     }
   }
-  leaked.clear();
   if (reclaimed > 0) {
-    logger.info('reclaimed leaked clients', { reclaimed, remaining: p_total() });
+    logger.warn('reclaimed stranded clients', { reclaimed, poolTotal: p_total() });
   }
   return reclaimed;
 }
@@ -155,6 +165,6 @@ export async function closePool() {
   if (!pool) return;
   const p = pool;
   pool = null;
-  leaked.clear();
+  checkedOut.clear();
   await p.end().catch(() => {});
 }

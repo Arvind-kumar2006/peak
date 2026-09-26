@@ -45,7 +45,11 @@ export function injectScenario(req, res) {
  */
 export async function reset(_req, res) {
   const cleared = clearFaults();
-  const reclaimed = await reclaimLeaked();
+  // graceMs 0: an operator reset means "make this healthy now", so reclaim
+  // every outstanding client immediately instead of waiting out the leak grace
+  // period. Safe because faults are already cleared, so no new checkouts are
+  // being started against the pool.
+  const reclaimed = await reclaimLeaked(0);
   const drained = await waitForPoolIdle(3000);
   const cacheEntries = clearCache();
   resetSamples();

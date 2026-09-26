@@ -31,13 +31,13 @@ export async function leakOneTick() {
     // Same log line the agent will quote as evidence.
     logger.warn(`pool exhausted (${stats.inUse}/${stats.max})`, {
       path: '/orders',
-      leakedClients: leakedCount(),
+      strandedClients: leakedCount(),
       hint: 'all pool clients are checked out and idle in transaction',
     });
     // Still try to take a client so the acquire times out and surfaces as a
     // 500 on the request path, exactly as a genuinely dry pool would.
     try {
-      const client = await acquire({ registerLeak: true });
+      const client = await acquire();
       await client.query('BEGIN');
       await client.query(RECONCILE_SQL);
       return 1;
@@ -47,7 +47,7 @@ export async function leakOneTick() {
     }
   }
 
-  const client = await acquire({ registerLeak: true });
+  const client = await acquire();
   try {
     await client.query('BEGIN');
     await client.query(RECONCILE_SQL);
