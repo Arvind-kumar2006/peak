@@ -58,20 +58,39 @@ Goal: agree on contracts so all four can work in parallel against mocks.
 
 **Contracts:** [`scenarios.md`](contracts/scenarios.md), [`demo-app-api.md`](contracts/demo-app-api.md) · **Start immediately — no dependencies.**
 
-- [ ] Node service with a few DB-backed endpoints (incl. `GET /orders`) on port 3000
-- [ ] Neon/Supabase Postgres provisioned
-- [ ] `GET /health`, `GET /metrics` exactly as in the contract
-- [ ] `POST /admin/inject/:scenario`, `POST /admin/reset`, `POST /admin/cache/clear` (header `x-admin-token`)
-- [ ] Background traffic generator so metrics move on their own
-- [ ] **Scenario A**: commit that leaks connections (missing `client.release()`)
-- [ ] **Scenario B**: unbounded cache growth, triggerable without a deploy
-- [ ] Sentry integrated, `release` = commit SHA
-- [ ] Distinctive log lines (e.g. `pool exhausted (10/10)`)
+- [x] Node service with a few DB-backed endpoints (incl. `GET /orders`) on port 3000
+- [x] Neon/Supabase Postgres provisioned — **local Postgres 15 verified instead; managed DB still needed for Render**
+- [x] `GET /health`, `GET /metrics` exactly as in the contract
+- [x] `POST /admin/inject/:scenario`, `POST /admin/reset`, `POST /admin/cache/clear` (header `x-admin-token`)
+- [x] Background traffic generator so metrics move on their own
+- [x] **Scenario A**: commit that leaks connections (missing `client.release()`) — branch `p1/scenario-a-bad-commit`
+- [x] **Scenario B**: unbounded cache growth, triggerable without a deploy
+- [x] Sentry integrated, `release` = commit SHA — **code done, needs a real DSN to verify**
+- [x] Distinctive log lines (e.g. `pool exhausted (10/10)`)
 - [ ] Deployed on Render
 - [ ] Rollback via Render API verified manually — **measure how long it takes** (drives demo timing)
 - [ ] Share with team: app URL, Render service ID, API keys (privately)
 
-**Deliverable by ~6h:** app deployed, Scenario A injectable, metrics visibly degrade.
+**Verified locally against real Postgres** — `npm run smoke` (40 assertions, all
+passing) and `npm run smoke:scenario-b`. Both scenarios confirmed reproducible:
+
+| | Scenario A | Scenario B |
+|---|---|---|
+| Trigger | deploy of `perf: reuse client for order lookup`, or `POST /admin/inject/conn-leak` | `POST /admin/inject/mem-leak` |
+| Measured | pool 10/10 in ~60s, `waiting` 7, `p95` 2003ms, `errorRate` 0.30, `/orders` → 500 `pool exhausted (10/10)`, **10 × `idle in transaction`** in `pg_stat_activity` | memory 26MB → **385MB (75% of 512MB)**, `p95` 1ms → 173ms, `cache.entries` 0 → 717 |
+| Fix verified | `POST /admin/reset` reclaims all 10 clients in ~10ms | `POST /admin/cache/clear` → memory back to 5%, `p95` 3ms |
+
+The `idle in transaction` rows are deliberate: a naive leak shows as `active` in
+`pg_stat_activity` (reads like slow queries), so Scenario A opens a transaction
+and never commits, giving `db-mcp` a second independent source of evidence.
+
+> **Blockers for the rest of the team** — details in [`demo-app/README.md`](demo-app/README.md):
+> 1. **Use a direct (non-pooled) `DATABASE_URL`.** A pgbouncer/pooler URL breaks `pg_stat_activity` and `idle in transaction` detection, which is the evidence Scenario A stands on. Affects P2's `db-mcp` directly.
+> 2. **Scenario B needs a quiet commit window.** `list_recent_commits(sinceMinutes: 120)` must come back empty/unrelated during Scenario B, or "recent commits are unrelated" is not a fair test. Must be settled in `scenarios.md` before P3 writes SKILL.md.
+> 3. **`process.memoryMB` is live memory (`heapUsed + external`), not `rss`** — the allocator does not return freed pages on every platform, so `rss` can stay high after a real fix and the contract's "below 60% of limit" bar would never be met. Real `rss` is in `_diag.rssMB`. P2 reads the top-level field.
+> 4. **`get_metrics_window` has no defined data source.** Recommendation: P2 samples `/metrics` every 10s and caches, keeping the stability check independent of the app being measured.
+> 5. **`errorRate` 60s window + 60s stability window = up to ~2min to *resolved*.** If the demo feels slow, `ERROR_RATE_WINDOW_SEC=20` is a one-line change.
+
 
 ---
 
@@ -80,17 +99,17 @@ Goal: agree on contracts so all four can work in parallel against mocks.
 **Contract:** [`mcp-tools.md`](contracts/mcp-tools.md) · **Depends on:** contracts only — use `MOCK=1` data until P1 is live.
 **Reference:** [`agent/spike/dummy-mcp.mjs`](agent/spike/dummy-mcp.mjs) is a working HTTP MCP server to copy from.
 
-- [ ] `db-mcp` (port 7101) — read: `get_pool_stats`, `get_slow_queries`, `get_lock_waits`
-- [ ] `cloud-mcp` (port 7102) — read: `get_service_status`, `get_metrics`, `get_metrics_window`, `get_recent_errors` (Sentry)
-- [ ] `cloud-mcp` — write (`destructiveHint`): `restart_service`, `scale_service`, `clear_cache`
-- [ ] `github-mcp` (port 7103) — read: `list_recent_commits`, `get_commit_diff`
-- [ ] `github-mcp` — write (`destructiveHint`): `trigger_rollback` (stretch: `create_fix_pr`)
-- [ ] Every response includes `source` + `observedAt`
-- [ ] `MOCK=1` mode on every server — mocks match Scenario A and B signals
-- [ ] Register all three in TrueForge; confirm `GET /api/v1/mcp-servers/{name}/tools` lists them
+- [x] `db-mcp` (port 7101) — read: `get_pool_stats`, `get_slow_queries`, `get_lock_waits`
+- [x] `cloud-mcp` (port 7102) — read: `get_service_status`, `get_metrics`, `get_metrics_window`, `get_recent_errors` (Sentry)
+- [x] `cloud-mcp` — write (`destructiveHint`): `restart_service`, `scale_service`, `clear_cache`
+- [x] `github-mcp` (port 7103) — read: `list_recent_commits`, `get_commit_diff`
+- [x] `github-mcp` — write (`destructiveHint`): `trigger_rollback` (stretch: `create_fix_pr`)
+- [x] Every response includes `source` + `observedAt`
+- [x] `MOCK=1` mode on every server — mocks match Scenario A and B signals
+- [x] Register all three in TrueForge; confirm `GET /api/v1/mcp-servers/{name}/tools` lists them
 - [ ] Swap mocks → real APIs once P1 is deployed
 
-**Deliverable by ~6h:** all three servers running in mock mode and visible in TrueForge.
+**Deliverable by ~6h:** all three servers running in mock mode and visible in TrueForge. ✅ DONE
 
 ---
 
