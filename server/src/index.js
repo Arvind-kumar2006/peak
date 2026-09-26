@@ -9,6 +9,7 @@ import { slackRoutes } from './routes/slack.js';
 import { handleMcp } from './agent/tools.js';
 import { initAgent, mcpToken } from './agent/runner.js';
 import { startMonitor } from './monitor.js';
+import { applyEnvDefaultsToAll } from './integrations/defaults.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -41,5 +42,5 @@ app.use((err, req, res, _next) => {
 app.listen(config.port, () => {
   console.log(`[peak] server on http://localhost:${config.port} (app: ${config.appUrl})`);
   initAgent();
-  startMonitor();
+  applyEnvDefaultsToAll().finally(startMonitor);
 });

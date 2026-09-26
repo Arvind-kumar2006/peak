@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { db, now, newId } from './db.js';
 import { hashPassword, verifyPassword, token } from './crypto.js';
 import { config } from './config.js';
+import { applyEnvDefaults } from './integrations/defaults.js';
 
 const COOKIE = 'peak_session';
 const SESSION_DAYS = 30;
@@ -21,6 +22,7 @@ function createUser({ email, name, passwordHash, githubId }) {
     workspaceId,
     now(),
   );
+  applyEnvDefaults(workspaceId).catch((err) => console.warn('[defaults]', err.message));
   return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
 }
 
