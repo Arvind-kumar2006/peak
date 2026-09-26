@@ -1,0 +1,24 @@
+{
+  "name": "@peak/demo-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PEAK demo app — the service we break on purpose (P1). See contracts/demo-app-api.md and contracts/scenarios.md",
+  "engines": {
+    "node": ">=22.14"
+  },
+  "scripts": {
+    "start": "node --expose-gc src/index.js",
+    "dev": "node --expose-gc --watch src/index.js",
+    "db:setup": "node scripts/db-setup.mjs",
+    "db:reset": "node scripts/db-setup.mjs --reset",
+    "load": "node scripts/load.js",
+    "smoke": "node test/smoke.mjs",
+    "smoke:scenario-b": "node test/scenario-b-volume.mjs"
+  },
+  "dependencies": {
+    "@sentry/node": "^8.47.0",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  }
+}
