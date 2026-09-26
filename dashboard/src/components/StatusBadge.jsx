@@ -6,21 +6,21 @@
 // encoded once, here, and nowhere else.
 
 const STYLES = {
-  investigating: { label: 'Investigating', tone: 'busy', hint: 'Agent is gathering evidence' },
-  awaiting_approval: { label: 'Awaiting approval', tone: 'action', hint: 'A human decision is required' },
-  executing: { label: 'Executing fix', tone: 'busy', hint: 'Approved action is running' },
-  diagnosed: { label: 'Diagnosed', tone: 'neutral', hint: 'Cause found, no action taken' },
-  resolved: { label: 'Resolved', tone: 'good', hint: 'Metrics stable after the action' },
+  investigating: { label: 'Investigating', tone: 'busy', icon: '◌', hint: 'Agent is gathering evidence' },
+  awaiting_approval: { label: 'Awaiting approval', tone: 'action', icon: '●', hint: 'A human decision is required' },
+  executing: { label: 'Executing fix', tone: 'busy', icon: '◌', hint: 'Approved action is running, then verified' },
+  diagnosed: { label: 'Diagnosed', tone: 'neutral', icon: '○', hint: 'Cause found, no action taken' },
+  resolved: { label: 'Resolved', tone: 'good', icon: '✓', hint: 'Metrics stable after the action' },
   // Deliberately amber, not green. The demo scenario exists to show that
   // restarting a leaking service only masks the problem.
-  mitigated: { label: 'Mitigated', tone: 'warn', hint: 'Symptoms gone, cause still present' },
-  not_resolved: { label: 'Not resolved', tone: 'bad', hint: 'Action ran, service did not recover' },
-  rejected: { label: 'Rejected', tone: 'neutral', hint: 'Operator declined the action' },
-  error: { label: 'Error', tone: 'bad', hint: 'The investigation failed' },
-  cancelled: { label: 'Cancelled', tone: 'neutral', hint: 'Stopped before completion' },
+  mitigated: { label: 'Mitigated only', tone: 'warn', icon: '≈', hint: 'Symptoms gone, cause still present' },
+  not_resolved: { label: 'Not resolved', tone: 'bad', icon: '✕', hint: 'Action ran, service did not recover' },
+  rejected: { label: 'Rejected', tone: 'neutral', icon: '○', hint: 'Operator declined the action' },
+  error: { label: 'Error', tone: 'bad', icon: '!', hint: 'The investigation failed' },
+  cancelled: { label: 'Cancelled', tone: 'neutral', icon: '○', hint: 'Stopped before completion' },
 };
 
-const UNKNOWN = { label: 'Unknown', tone: 'neutral', hint: '' };
+const UNKNOWN = { label: 'Unknown', tone: 'neutral', icon: '○', hint: '' };
 
 export function statusStyle(status) {
   return STYLES[status] ?? UNKNOWN;

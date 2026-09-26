@@ -82,8 +82,6 @@ export default function App() {
         </div>
       </header>
 
-      <SimulateBar onSimulate={onSimulate} onReset={onReset} busy={busy} />
-
       {actionError && (
         <div className="alert alert-error banner" role="alert">
           <strong>Action failed.</strong> {actionError.message}
@@ -99,12 +97,15 @@ export default function App() {
       )}
 
       <div className="layout">
-        <IncidentFeed
-          incidents={incidents}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          loading={!incidents.length && !listError}
-        />
+        <aside className="rail">
+          <SimulateBar onSimulate={onSimulate} onReset={onReset} busy={busy} />
+          <IncidentFeed
+            incidents={incidents}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            loading={!incidents.length && !listError}
+          />
+        </aside>
         <IncidentDetail incident={incident} error={incidentError} onDecided={onDecided} />
       </div>
     </div>

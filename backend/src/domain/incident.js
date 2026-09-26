@@ -30,6 +30,9 @@ export function toSummary(row) {
     rootCauseCategory: row.diagnosis?.rootCause?.category ?? null,
     confidence: row.diagnosis?.rootCause?.confidence ?? null,
     pendingTool: row.pending_action?.tool ?? null,
+    // Short feed titles ("Connection leak · 5a824ff") and the outcome line.
+    commitSha: row.diagnosis?.rootCause?.commitSha ?? null,
+    verdict: row.resolution?.verdict ?? null,
     trueforgeUrl: row.trueforge_url ?? null,
     error: row.error ?? null,
     stalled: Boolean(row.stalled),

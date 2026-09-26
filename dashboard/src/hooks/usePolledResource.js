@@ -21,23 +21,29 @@ export function usePolledResource(fetcher, { intervalMs = 2000, enabled = true, 
 
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
-  const inFlight = useRef(false);
+  // The signal of the request in flight (or true for a manual refresh). Keyed by
+  // signal, not a boolean: after a dependency change the old request is aborted
+  // but still "in flight" until its promise settles, and a plain flag made the
+  // new incident's first load wait a whole poll interval.
+  const inFlight = useRef(null);
 
   const run = useCallback(async (signal) => {
-    if (inFlight.current) return;
-    inFlight.current = true;
+    const key = signal ?? true;
+    if (inFlight.current === key) return;
+    inFlight.current = key;
     try {
       // The signal goes to the fetcher, which forwards it to fetch(). Without
       // this an aborted poll would still resolve and overwrite fresher state.
       const value = await fetcherRef.current(signal);
+      if (signal?.aborted) return;
       setData(value);
       setError(null);
     } catch (err) {
-      if (err.name === 'AbortError') return;
+      if (err.name === 'AbortError' || signal?.aborted) return;
       setError(err);
     } finally {
-      inFlight.current = false;
-      setLoading(false);
+      if (inFlight.current === key) inFlight.current = null;
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
@@ -45,6 +51,11 @@ export function usePolledResource(fetcher, { intervalMs = 2000, enabled = true, 
     if (!enabled) return undefined;
     let timer = null;
     const controller = new AbortController();
+    // New dependencies (e.g. another incident selected): never show the old
+    // resource's data under the new one while the first request is in flight.
+    setData(null);
+    setError(null);
+    setLoading(true);
 
     const tick = () => {
       if (document.hidden) return; // paused; the next tick will pick it up

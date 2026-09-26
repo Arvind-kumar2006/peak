@@ -16,6 +16,12 @@ import { logger } from '../logger.js';
 // more than one sample behind what the user sees.
 const SAMPLE_INTERVAL_MS = 2000;
 
+// Keep sampling this long after the turn finishes. The chart has to show the
+// recovery *after* the verdict, not stop on it — and with the mock world the
+// verification window is simulated, so the turn can end within a second of the
+// approval and the chart used to show no "after" at all.
+const TAIL_MS = 60_000;
+
 export function createSampler({ store, demoApp }) {
   let timer = null;
   let lastIncidentId = null;
@@ -29,7 +35,9 @@ export function createSampler({ store, demoApp }) {
       // Keep sampling until the turn finishes, not until the status goes
       // terminal: a rejected incident still needs its after-numbers, otherwise
       // the chart just stops mid-spike and looks broken.
-      const open = incidents.find((i) => i.session_id && !i.turn_done);
+      const open = incidents.find(
+        (i) => i.session_id && (!i.turn_done || Date.now() - new Date(i.updated_at).getTime() < TAIL_MS),
+      );
       if (!open) return;
 
       const metrics = await demoApp.metrics();

@@ -1,36 +1,24 @@
-// Left column: the incident feed, plus the operator controls that start things.
+// Left rail: the operator controls that start things, then the incident feed.
 
-import { StatusBadge } from './StatusBadge.jsx';
+import { statusStyle } from './StatusBadge.jsx';
 
 const SCENARIOS = [
-  {
-    key: 'conn-leak',
-    label: 'Scenario A — connection leak',
-    hint: 'A bad commit leaks Postgres clients. Correct fix: roll back.',
-  },
-  {
-    key: 'mem-leak',
-    label: 'Scenario B — memory blowup',
-    hint: 'Unbounded cache growth, no deploy. Correct fix: clear cache.',
-  },
+  { key: 'conn-leak', label: 'A · Connection leak', hint: 'Bad deploy leaks Postgres clients' },
+  { key: 'mem-leak', label: 'B · Memory blowup', hint: 'Cache grows without eviction, no deploy' },
 ];
 
 export function SimulateBar({ onSimulate, onReset, busy }) {
   return (
-    <div className="simulate-bar">
+    <div className="rail-section">
+      <span className="eyebrow">Simulate an incident</span>
       {SCENARIOS.map((s) => (
-        <button
-          key={s.key}
-          className="btn btn-scenario"
-          title={s.hint}
-          disabled={busy}
-          onClick={() => onSimulate(s.key)}
-        >
-          {s.label}
+        <button key={s.key} className="scenario-btn" disabled={busy} onClick={() => onSimulate(s.key)}>
+          <strong>{s.label}</strong>
+          <span>{s.hint}</span>
         </button>
       ))}
-      <button className="btn btn-ghost" onClick={onReset} disabled={busy}>
-        Reset demo
+      <button className="btn btn-ghost btn-sm" onClick={onReset} disabled={busy}>
+        Reset service to healthy
       </button>
     </div>
   );
@@ -38,57 +26,75 @@ export function SimulateBar({ onSimulate, onReset, busy }) {
 
 export function IncidentFeed({ incidents, selectedId, onSelect, loading }) {
   return (
-    <aside className="feed">
-      <h2 className="feed-title">
-        Incidents
-        {incidents.length > 0 && <span className="count">{incidents.length}</span>}
-      </h2>
+    <div className="rail-section">
+      <span className="eyebrow">Incidents{incidents.length > 0 && ` · ${incidents.length}`}</span>
 
-      {loading && incidents.length === 0 && <p className="muted">Loading…</p>}
-
+      {loading && incidents.length === 0 && <p className="empty">Loading…</p>}
       {!loading && incidents.length === 0 && (
         <div className="empty">
           <p>No incidents yet.</p>
-          <p className="muted small">Trigger a scenario above to watch the agent investigate.</p>
+          <p>Trigger a scenario above to watch the agent investigate.</p>
         </div>
       )}
 
       <ul className="feed-list">
-        {incidents.map((incident) => (
-          <li key={incident.id}>
-            <button
-              className={`feed-item ${incident.id === selectedId ? 'feed-item-active' : ''}`}
-              onClick={() => onSelect(incident.id)}
-            >
-              <div className="feed-item-top">
-                <StatusBadge status={incident.status} stalled={incident.stalled} small />
-                <span className="feed-time">{formatAge(incident.createdAt)}</span>
-              </div>
-              <div className="feed-item-title">
-                {incident.summary || scenarioLabel(incident.scenario) || 'Investigating…'}
-              </div>
-              <div className="feed-item-meta">
-                {incident.scenario && <code>{incident.scenario}</code>}
-                {incident.pendingTool && <code className="pending">{incident.pendingTool}</code>}
-                {incident.rootCauseCategory && <code>{incident.rootCauseCategory}</code>}
-                {/* A rejected incident is terminal, but the agent's turn is still
-                    running and owes us a Resolution — say so rather than looking frozen. */}
-                {!incident.turnDone && incident.status === 'rejected' && (
-                  <code className="pending">wrapping up</code>
-                )}
-              </div>
-            </button>
-          </li>
-        ))}
+        {incidents.map((incident) => {
+          const style = statusStyle(incident.status);
+          const active = incident.id === selectedId;
+          return (
+            <li key={incident.id}>
+              <button
+                className={`feed-item ${active ? `feed-item-active is-${style.tone}` : ''}`}
+                onClick={() => onSelect(incident.id)}
+                aria-current={active ? 'true' : undefined}
+              >
+                <span className="feed-item-top">
+                  <span className={`feed-status tone-${style.tone}`}>
+                    {style.icon} {style.label}
+                  </span>
+                  <span className="feed-time">{formatAge(incident.createdAt)}</span>
+                </span>
+                <span className="feed-item-title">{shortTitle(incident)}</span>
+                <FeedMeta incident={incident} />
+              </button>
+            </li>
+          );
+        })}
       </ul>
-    </aside>
+    </div>
   );
 }
 
-function scenarioLabel(scenario) {
-  if (scenario === 'conn-leak') return 'Connection leak incident';
-  if (scenario === 'mem-leak') return 'Memory blowup incident';
-  return 'Untriaged incident';
+function FeedMeta({ incident }) {
+  if (incident.status === 'awaiting_approval' && incident.pendingTool) {
+    return <span className="feed-item-meta is-action">→ {incident.pendingTool}</span>;
+  }
+  // A rejected incident is terminal, but the agent's turn still owes us a Resolution.
+  if (!incident.turnDone && incident.status === 'rejected') {
+    return <span className="feed-item-meta">wrapping up…</span>;
+  }
+  if (incident.pendingTool && incident.status !== 'investigating') {
+    const verb = incident.status === 'rejected' ? 'declined' : incident.status === 'executing' ? 'running' : 'ran';
+    return <span className="feed-item-meta">{incident.pendingTool} {verb}</span>;
+  }
+  return <span className="feed-item-meta">{incident.error ? 'agent error' : 'agent investigating'}</span>;
+}
+
+/** "Connection leak · 5a824ff" — the feed needs a name, not the full diagnosis sentence. */
+function shortTitle(incident) {
+  const kind =
+    incident.scenario === 'conn-leak'
+      ? 'Connection leak'
+      : incident.scenario === 'mem-leak'
+        ? 'Memory blowup'
+        : incident.rootCauseCategory === 'code'
+          ? 'Code regression'
+          : incident.rootCauseCategory === 'infra'
+            ? 'Infrastructure issue'
+            : 'Incident';
+  if (incident.commitSha) return `${kind} · ${incident.commitSha.slice(0, 7)}`;
+  if (incident.rootCauseCategory === 'infra') return `${kind} · no deploy`;
+  return kind;
 }
 
 function formatAge(iso) {

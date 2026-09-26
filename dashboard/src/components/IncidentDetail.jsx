@@ -1,17 +1,19 @@
-// Right column: everything about the selected incident, in narrative order.
+// Right column: everything about the selected incident.
 //
-// The order is the argument: what happened → what the agent concluded → what it
-// wants to do → whether it worked → the raw trail. A judge should be able to
-// read it top to bottom and never need to ask a question that the order itself
-// raises.
+// Layout follows the moment, because the question on screen changes:
+//   awaiting approval → "should I let it do this?"  decision panel first
+//   finished          → "did it work?"              outcome first
+//   in progress       → "what is it doing?"         stepper + live chart
+// The stepper is always there, so the whole loop — investigate, diagnose,
+// approve, execute, verify — is legible at a glance from across a room.
 
-import { StatusBadge } from './StatusBadge.jsx';
-import { DiagnosisCard, EvidenceList, ResolutionCard } from './Diagnosis.jsx';
-import { PendingActionCard } from './PendingActionCard.jsx';
+import { StatusBadge, statusStyle } from './StatusBadge.jsx';
+import { DiagnosisCard, EvidenceList, OutcomeCard } from './Diagnosis.jsx';
+import { PendingActionCard, friendly } from './PendingActionCard.jsx';
 import { MetricsChart } from './MetricsChart.jsx';
 
 export function IncidentDetail({ incident, error, onDecided }) {
-  if (error) {
+  if (error && !incident) {
     return (
       <main className="detail">
         <div className="alert alert-error" role="alert">
@@ -24,115 +26,213 @@ export function IncidentDetail({ incident, error, onDecided }) {
     return (
       <main className="detail">
         <div className="empty empty-lg">
-          <h2>Select an incident</h2>
-          <p className="muted">
-            Trigger Scenario A or B on the left. The agent will investigate with read-only tools, propose one
-            fix, and pause for your approval.
+          <h2>No incident selected</h2>
+          <p>
+            Simulate Scenario A or B on the left. The agent investigates with read-only tools, proposes one fix, and
+            waits for your approval before anything changes.
           </p>
         </div>
       </main>
     );
   }
 
-  const decision = incident.decisions?.[0];
+  const decision = incident.decisions?.[0] ?? null;
+  const awaiting = incident.status === 'awaiting_approval';
+  const finished = Boolean(incident.resolution);
 
   return (
     <main className="detail">
       <header className="detail-head">
         <div className="detail-head-top">
           <StatusBadge status={incident.status} stalled={incident.stalled} />
-          {incident.scenario && <code className="scenario-tag">{incident.scenario}</code>}
+          <span className="detail-meta">{metaLine(incident, decision)}</span>
           <span className="spacer" />
           {incident.trueforgeUrl && (
-            <a className="btn btn-ghost btn-sm" href={incident.trueforgeUrl} target="_blank" rel="noreferrer">
-              Open in TrueForge ↗
+            <a className="btn btn-sm btn-ghost" href={incident.trueforgeUrl} target="_blank" rel="noreferrer">
+              Open reasoning trail ↗
             </a>
           )}
         </div>
-        <h1 className="detail-title">{incident.diagnosis?.summary || headlineFor(incident)}</h1>
+        <h1 className="detail-title">{headline(incident, decision)}</h1>
+        <Stepper incident={incident} decision={decision} />
         {incident.error && <div className="alert alert-error">{incident.error}</div>}
         {incident.stalled && (
           <div className="alert alert-warn">
             No new activity for 90 seconds. The agent may be stuck or the runtime may be unreachable.
           </div>
         )}
-        <DecisionBadge decision={decision} />
       </header>
 
-      {/* Order matters: the approval card sits directly under the diagnosis it
-          justifies, and the resolution below the chart that corroborates it. */}
-      <PendingActionCard incident={incident} onDecided={onDecided} />
+      {awaiting && <PendingActionCard incident={incident} onDecided={onDecided} />}
+      {finished && <OutcomeCard resolution={incident.resolution} />}
+      {!awaiting && !finished && decision && <DecisionNotice decision={decision} turnDone={incident.turnDone} />}
 
-      <DiagnosisCard diagnosis={incident.diagnosis} />
-      <EvidenceList evidence={incident.diagnosis?.evidence} />
+      {/* The line is red while the incident is live. */}
       <MetricsChart
         samples={incident.metrics ?? []}
-        decisionAt={decision?.at}
+        decisionAt={decision?.decision === 'allow' ? decision.at : null}
         resolution={incident.resolution}
+        scenario={incident.scenario}
+        active={!finished && incident.status !== 'error'}
       />
-      <ResolutionCard resolution={incident.resolution} />
+
+      <div className="grid-2">
+        <DiagnosisCard diagnosis={incident.diagnosis} />
+        <EvidenceList evidence={incident.diagnosis?.evidence} />
+      </div>
+
       <Timeline events={incident.timeline ?? []} />
     </main>
   );
 }
 
-function DecisionBadge({ decision }) {
-  if (!decision) return null;
+function DecisionNotice({ decision, turnDone }) {
   const allowed = decision.decision === 'allow';
   return (
-    <div className={`decision-badge ${allowed ? 'decision-allow' : 'decision-deny'}`}>
-      <span className="decision-icon">{allowed ? '✓' : '✕'}</span>
-      <div>
-        <strong>{allowed ? 'Approved by operator' : 'Rejected by operator'}</strong>
-        {decision.tool && (
-          <div className="muted small">
-            <code>{decision.tool}</code>
-            {decision.reason && <> — {decision.reason}</>}
-          </div>
-        )}
-      </div>
+    <div className="notice" role="status">
+      <span className={allowed ? 'tone-good' : 'tone-neutral'}>{allowed ? '✓' : '○'}</span>
+      <span>
+        <strong>{allowed ? 'Approved' : 'Rejected'}</strong>{' '}
+        {decision.tool && <code>{decision.tool}</code>}
+        {allowed
+          ? ' — running it now, then watching the metrics for 60 seconds before giving a verdict.'
+          : ` — nothing was run.${turnDone ? '' : ' The agent is writing up its report.'}`}
+      </span>
     </div>
   );
 }
 
-function headlineFor(incident) {
+function metaLine(incident, decision) {
+  const d = incident.diagnosis;
+  const parts = [];
+  if (d?.rootCause?.category === 'code') parts.push('Code-level');
+  if (d?.rootCause?.category === 'infra') parts.push('Infra-level');
+  if (Number.isFinite(d?.rootCause?.confidence)) parts.push(`confidence ${Math.round(d.rootCause.confidence * 100)}%`);
+  if (decision) {
+    const who = decision.decision === 'allow' ? 'Approved' : 'Rejected';
+    parts.push(`${who} at ${new Date(decision.at).toLocaleTimeString()}`);
+  }
+  if (incident.resolution?.windowSec) parts.push(`verified over ${incident.resolution.windowSec}s`);
+  return parts.join(' · ');
+}
+
+function headline(incident, decision) {
+  const d = incident.diagnosis;
+  const r = incident.resolution;
+  if (r && d) {
+    const action = friendly(r.actionTaken);
+    switch (r.verdict) {
+      case 'resolved':
+        return `${d.summary} Fixed by ${action} — verified.`;
+      case 'mitigated':
+        return `The ${action} cleared the symptoms, but the cause is still there.`;
+      case 'not_resolved':
+        return `The ${action} did not bring the service back.`;
+      case 'rejected':
+        return `${d.summary} The proposed ${action} was rejected.`;
+      default:
+        return d.summary;
+    }
+  }
+  if (d?.summary) return d.summary;
   switch (incident.status) {
     case 'investigating':
-      // The agent submits its Diagnosis before asking to act, so reaching here
-      // with a diagnosis present means it is still working, not stalled.
-      return incident.diagnosis
-        ? 'Diagnosis received — the agent is still working'
-        : 'Investigating…';
-    case 'awaiting_approval':
-      return 'Diagnosis complete — waiting for your approval';
+      return 'Investigating — the agent is gathering evidence…';
     case 'executing':
-      return 'Running the approved fix…';
+      return decision ? `Running the approved ${friendly(decision.tool)}…` : 'Running the approved fix…';
+    case 'error':
+      return 'The investigation failed.';
     default:
-      return 'Incident';
+      return statusStyle(incident.status).label;
   }
 }
 
+/** investigate → diagnose → approve → execute → verify */
+function Stepper({ incident, decision }) {
+  const s = incident.status;
+  const d = incident.diagnosis;
+  const r = incident.resolution;
+  const denied = decision?.decision === 'deny' || r?.verdict === 'rejected';
+  const allowed = decision?.decision === 'allow' || (r && r.verdict !== 'rejected' && r.actionTaken !== 'none');
+  const failed = s === 'error';
+
+  // Tool calls before the approval gate = the investigation itself.
+  const timeline = incident.timeline ?? [];
+  const gate = timeline.findIndex((e) => e.type === 'tool.approval_required');
+  const investigateTools = (gate === -1 ? timeline : timeline.slice(0, gate)).filter((e) => e.type === 'tool.response').length;
+  const steps = [
+    {
+      label: d ? 'Investigate' : 'Investigating…',
+      state: d ? 'done' : failed ? 'bad' : 'busy',
+      extra: d && investigateTools ? ` · ${investigateTools} tool calls` : '',
+    },
+    { label: 'Diagnose', state: d ? 'done' : failed ? 'bad' : 'todo' },
+    {
+      label: denied ? 'Rejected' : allowed ? 'Approved' : s === 'awaiting_approval' ? 'Approve — you' : 'Approve',
+      state: denied ? 'skipped' : allowed ? 'done' : s === 'awaiting_approval' ? 'current' : 'todo',
+    },
+    {
+      label: allowed && r ? `Executed ${friendly(r.actionTaken)}` : 'Execute',
+      state: denied ? 'skipped' : r && allowed ? 'done' : s === 'executing' ? 'busy' : 'todo',
+    },
+    {
+      label: r && !denied ? verifyLabel(r) : 'Verify · 60s window',
+      state: denied ? 'skipped' : r ? verifyState(r.verdict) : s === 'executing' ? 'busy' : 'todo',
+    },
+  ];
+
+  return (
+    <ol className="stepper" aria-label="Incident progress">
+      {steps.map((step) => (
+        <li key={step.label} className={`step step-${step.state}`}>
+          <span className="step-bar" />
+          <span>
+            {{ done: '✓ ', current: '● ', warn: '≈ ', bad: '✕ ' }[step.state] ?? ''}
+            {step.label}
+            {step.extra ?? ''}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function verifyState(verdict) {
+  return verdict === 'resolved' ? 'done' : verdict === 'mitigated' ? 'warn' : 'bad';
+}
+
+function verifyLabel(r) {
+  if (r.verdict === 'resolved') return 'Verified healthy';
+  if (r.verdict === 'mitigated') return 'Verify · symptoms returned';
+  return 'Verify · still unhealthy';
+}
+
 /**
- * The raw event trail, collapsed by default.
- *
- * This exists for the question every judge eventually asks: "show me that it
- * actually did the work." The answer is a scrollable list of the real tool
- * calls, not a claim that it did.
+ * The raw event trail, collapsed by default — the answer to "show me that it
+ * actually did the work": the real tool calls, not a claim that it did.
  */
 function Timeline({ events }) {
   if (!events.length) return null;
+  // tool.response events carry only the call id; name them from the model.message that made the call.
+  const names = new Map();
+  for (const e of events) {
+    for (const c of e.payload?.tool_calls ?? []) names.set(c.id, c.function?.name ?? c.name);
+  }
+  const calls = events.filter((e) => e.type === 'tool.response').length;
   return (
-    <details className="card timeline">
+    <details className="card">
       <summary>
-        <h2>Event trail</h2>
-        <span className="muted small">{events.length} events from the agent runtime</span>
+        <h2 className="eyebrow">Reasoning trail</h2>
+        <span className="muted small">
+          {events.length} events · {calls} tool calls
+        </span>
       </summary>
       <ol className="timeline-list">
         {events.map((e) => (
           <li key={e.id}>
             <span className="timeline-time">{new Date(e.at).toLocaleTimeString()}</span>
             <span className={`timeline-type type-${e.type.split('.')[0]}`}>{e.type}</span>
-            <span className="timeline-detail">{describe(e)}</span>
+            <span className="timeline-detail">{describe(e, names)}</span>
           </li>
         ))}
       </ol>
@@ -140,19 +240,19 @@ function Timeline({ events }) {
   );
 }
 
-function describe(event) {
+function describe(event, names) {
   const p = event.payload ?? {};
   switch (event.type) {
     case 'model.message':
-      if (p.tool_calls?.length) return p.tool_calls.map((c) => c.function?.name ?? c.name).filter(Boolean).join(', ');
-      if (p.content) return String(p.content).slice(0, 120);
+      if (p.tool_calls?.length) return `calls ${p.tool_calls.map((c) => c.function?.name ?? c.name).filter(Boolean).join(', ')}`;
+      if (p.content) return String(p.content).slice(0, 160);
       return '';
     case 'tool.response':
-      return `${p.name ?? 'tool'} ${String(p.content ?? '').slice(0, 90)}`.trim();
+      return `${names.get(p.tool_call_id) ?? p.name ?? 'tool'} → ${String(p.content ?? '').slice(0, 110)}`;
     case 'tool.approval_required':
-      return `waiting on ${p.tool_calls?.length ?? 0} tool call(s)`;
+      return `holding ${p.tool_calls?.length ?? 0} call(s) for human approval`;
     case 'turn.done':
-      return `turn ${p.state?.status ?? 'done'}`;
+      return p.state?.required_actions?.length ? 'turn paused for approval' : `turn ${p.state?.status ?? 'done'}`;
     case 'demo.inject_failed':
       return p.message ?? '';
     default:

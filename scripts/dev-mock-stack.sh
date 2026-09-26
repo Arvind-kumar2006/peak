@@ -29,6 +29,8 @@ until curl -sf localhost:8790/api/v1/capabilities >/dev/null; do sleep 1; done
 cat <<MSG
 
 ✓ Mock stack running.
+  Dashboard:         cd backend && TRUEFORGE_MODE=real MODEL_PROVIDERS=mock MOCK_WORLD_URL=http://localhost:7101 npm start
+                     cd dashboard && npm run dev   → http://localhost:5173
   Run an incident:   cd agent && MODEL_PROVIDERS=mock node run-incident.mjs --scenario A   (or B, --decision deny)
   Switch scenario:   curl -X POST localhost:7101/mock/state -d '{"scenario":"B"}'
   TrueForge UI:      http://localhost:8790

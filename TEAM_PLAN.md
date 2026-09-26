@@ -183,6 +183,13 @@ data, so the chart works but shows a flat line until :3000 is up).
 
 **Deliverable by ~6h:** dashboard renders a fake incident end to end; Approve button hits the backend. ✅
 
+
+**Fixes after review (P3, 2026-09-26)** — verified in real mode against the mock stack, screenshots checked:
+- 🔴 Real mode never showed *Awaiting approval*: a paused turn also emits `turn.done`, so status went straight to `error`, and after a decision the old approval still read as pending. `backend/src/trueforge/turns.js` now reads the **latest turn** only; 5 new tests (`test/turns.test.mjs`, 43/43 pass).
+- 🟠 Simulate/Reset/metrics ignored the MCP mock world, so on the mock stack the agent investigated a stale world and the chart drew random numbers. `MOCK_WORLD_URL` (backend `.env`) routes them to `POST /mock/state` / `GET /mock/metrics` when the demo app is down.
+- 🟠 The sampler stopped at the verdict, so the chart never showed the recovery. It now samples 60s past the end of the turn.
+- UI redesign (design: claude.ai/artifact/LRDzMTNMRXhM5mrYWbvyrM): progress stepper; decision panel with the *why* beside Approve; outcome-first layout with before/after tiles once resolved; honest step chart (no fake slope before the approval), coloured by verdict; live strip derives Healthy/Degraded (was a permanent "—"); short feed titles; event trail names each tool result; no stale incident flash when switching; IBM Plex type.
+
 ---
 
 ## Checkpoints (everyone syncs)
