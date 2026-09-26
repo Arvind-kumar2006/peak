@@ -1,16 +1,16 @@
 # PEAK — Team Plan & Work Division
 
 > Who does what, in what order, and how we plug it together.
-> Fill in names below, then treat this file as the source of truth. Update checkboxes as you go.
+> This file is the source of truth for **who owns what**. The **how** lives in [`contracts/`](contracts/). Update checkboxes as you go.
 
 ## Team
 
-| Role | Name | Owns |
-|---|---|---|
-| **P1 — Demo App & Infra** | _Kumar Praveen_ | Demo app, DB, Sentry, Render deploy, failure injection, rollback mechanism |
-| **P2 — MCP Connectors** | _Pranjal Negi_ | `db-mcp`, `cloud-mcp`, GitHub/Sentry MCP setup, whitelisted write tools |
-| **P3 — Agent Brain** | _Vaibhav Kumawat_ | TrueForge setup (or fallback), AgentSpec, SKILL.md, verification logic, eval runs |
-| **P4 — Backend, Dashboard & Demo** | _Arvind Kumar_ | Express backend, approval flow, dashboard, demo script, pitch, backup recording |
+| Role | Name | Owns | Folder |
+|---|---|---|---|
+| **P1 — Demo App & Infra** | Kumar Praveen | Demo app, DB, Sentry, Render deploy, failure injection, rollback mechanism | `demo-app/` |
+| **P2 — MCP Connectors** | Pranjal Negi | `db-mcp`, `cloud-mcp`, `github-mcp`, whitelisted write tools | `mcp/` |
+| **P3 — Agent Brain** | Vaibhav Kumawat | TrueForge setup, AgentSpec, SKILL.md, verification logic, eval runs | `agent/` |
+| **P4 — Backend, Dashboard & Demo** | Arvind Kumar | Express backend, approval flow, dashboard, demo script, pitch, backup recording | `backend/`, `dashboard/` |
 
 ---
 
@@ -18,118 +18,112 @@
 
 Goal: agree on contracts so all four can work in parallel against mocks.
 
-- [x] Create repo skeleton (layout below)
-- [x] Draft `contracts/scenarios.md` — both failure scenarios (owner: **P1**, review at kickoff)
-- [x] Draft `contracts/demo-app-api.md` — health/metrics/inject endpoints (owner: **P1**, review at kickoff)
-- [x] Draft `contracts/mcp-tools.md` — every tool: name, input, output, read vs write (owner: **P2**, review at kickoff)
-- [x] Draft `contracts/incident-report.schema.json` — agent's final output shape (owner: **P3**, review at kickoff)
-- [x] Draft `contracts/backend-api.md` — REST endpoints for dashboard (owner: **P4**, review at kickoff)
-- [x] TrueForge API verified against v0.2.1 — see `contracts/trueforge.md` (sessions, MCP, approval schema, JSON output, deep links all ✅)
-- [ ] **Run `agent/spike` with a real `ANTHROPIC_API_KEY`** (owner: **P3**, ~10 min) — last unconfirmed step: live approval round-trip
-- [ ] Team reviews all `contracts/` files together, then marks them frozen
-- [ ] **TrueForge spike** (owner: **P3**, in parallel): dummy MCP tool marked dangerous → confirm it pauses → approve it via HTTP → confirm it resumes. **Decision by Hour 2: TrueForge or fallback (Claude Agent SDK / plain tool-use loop + our own approval gate).**
+- [x] Create repo skeleton
+- [x] Draft `contracts/scenarios.md` — both failure scenarios (owner: **P1**)
+- [x] Draft `contracts/demo-app-api.md` — health/metrics/inject endpoints (owner: **P1**)
+- [x] Draft `contracts/mcp-tools.md` — every tool: name, input, output, read vs write (owner: **P2**)
+- [x] Draft `contracts/incident-report.schema.json` — agent's final output shape (owner: **P3**)
+- [x] Draft `contracts/backend-api.md` — REST endpoints for dashboard (owner: **P4**)
+- [x] TrueForge v0.2.1 verified — sessions, MCP, approval schema, JSON output, deep links ([`contracts/trueforge.md`](contracts/trueforge.md)). **Decision: GO**
+- [ ] **Live approval spike** with a real `ANTHROPIC_API_KEY` — `agent/spike` (owner: **P3**, ~10 min). Run with `allow` and `DECISION=deny`. If it fails → fallback to Claude Agent SDK + our own approval gate
+- [ ] **Each owner reviews their contract file** with the team → mark contracts **frozen**
+- [ ] Everyone: clone repo, copy `.env.example` → `.env`, get TrueForge running locally (see [README](README.md#quick-start))
 
-### Repo layout
+### Decisions
 
-```
-Peak/
-├── contracts/          # shared agreements — change only with team sign-off
-├── demo-app/           # P1
-├── mcp/
-│   ├── db/             # P2
-│   ├── cloud/          # P2
-│   └── github/         # P2 (thin wrapper for rollback / create_pr)
-├── agent/              # P3 — AgentSpec, SKILL.md, eval scripts
-├── backend/            # P4
-└── dashboard/          # P4
-```
-
-### Proposed decisions (confirm at kickoff)
-
-| Topic | Proposal |
-|---|---|
-| Scenario A (code-level) | Bad commit leaks DB connections → pool exhaustion → 500s. Fix: **rollback** |
-| Scenario B (infra-level) | No recent deploy; memory blowup / stuck cache. Fix: **restart / scale / clear_cache** |
-| Rollback mechanism | Render API rollback to previous deploy (NOT the deploy hook — that redeploys the bad HEAD) |
-| GitHub access | Fine-grained PAT for MVP; GitHub App = stretch goal |
-| MCP transport | All MCP servers = Streamable HTTP at `/mcp` (TrueForge has no stdio support) |
-| TrueForge version | Pin `@0.2.1`; start with `OUTBOUND_URL_ALLOWED_HOSTS='["localhost","127.0.0.1"]'` |
-| GitHub / Sentry MCP | Reuse official servers (read-only toolsets); only build `db-mcp`, `cloud-mcp`, and a small rollback wrapper |
-| "Resolved" definition | Health signal stable over a window (e.g. 60s), not one sample. Symptom-only fixes are reported as **"mitigated"** |
+| Topic | Decision | Status |
+|---|---|---|
+| Agent runtime | TrueForge **pinned `@0.2.1`** (0.3.0-rc exists — don't upgrade mid-hackathon) | ✅ verified |
+| TrueForge startup | `OUTBOUND_URL_ALLOWED_HOSTS='["localhost","127.0.0.1"]'` or it blocks local MCP servers | ✅ verified |
+| MCP transport | All MCP servers = **Streamable HTTP at `/mcp`** (TrueForge has no stdio support) | ✅ verified |
+| Approval gate | Write tools listed **by name** in `require_approval_for_tools`; backend approves via `user.tool_approval` | ✅ schema / ⏳ live run |
+| Structured output | AgentSpec `response_format: json_schema` using `incident-report.schema.json` | ✅ verified |
+| Scenario A (code-level) | Bad commit leaks DB connections → pool exhaustion → 500s. Fix: **rollback** | Confirm at kickoff |
+| Scenario B (infra-level) | No recent deploy; memory blowup / cache growth. Fix: **clear_cache** (or restart) | Confirm at kickoff |
+| Rollback mechanism | **Render API rollback** to previous deploy (NOT the deploy hook — that redeploys the bad HEAD) | Confirm at kickoff |
+| GitHub access | Fine-grained PAT; GitHub App = stretch goal | Confirm at kickoff |
+| GitHub / Sentry tools | Our own small `github-mcp` (reads + rollback); Sentry `get_recent_errors` lives in `cloud-mcp`. No official servers — fewer auth surprises | Confirm at kickoff |
+| "Resolved" definition | Metrics stable over a **60s window**, not one sample. Symptom-only fixes → **"mitigated"** | Confirm at kickoff |
+| Dashboard updates | Poll `GET /api/incidents/:id` every 2s (no SSE) | Confirm at kickoff |
 
 ---
 
-## P1 — Demo App & Infra
+## P1 — Demo App & Infra · Kumar Praveen
 
-**Start immediately — no dependencies.**
+**Contracts:** [`scenarios.md`](contracts/scenarios.md), [`demo-app-api.md`](contracts/demo-app-api.md) · **Start immediately — no dependencies.**
 
-- [ ] Small Node service with a few DB-backed endpoints
+- [ ] Node service with a few DB-backed endpoints (incl. `GET /orders`) on port 3000
 - [ ] Neon/Supabase Postgres provisioned
-- [ ] `/health` and `/metrics` (pool in-use/total, error rate, memory, uptime)
-- [ ] `/admin/inject/:scenario` and `/admin/reset`
-- [ ] **Scenario A**: commit that leaks connections (not releasing pool clients)
-- [ ] **Scenario B**: memory leak / cache blowup triggerable without a deploy
-- [ ] Sentry integrated, errors tagged with release = commit SHA
-- [ ] Clear, distinctive log lines (e.g. `pool exhausted (10/10)`) so evidence is unambiguous
+- [ ] `GET /health`, `GET /metrics` exactly as in the contract
+- [ ] `POST /admin/inject/:scenario`, `POST /admin/reset`, `POST /admin/cache/clear` (header `x-admin-token`)
+- [ ] Background traffic generator so metrics move on their own
+- [ ] **Scenario A**: commit that leaks connections (missing `client.release()`)
+- [ ] **Scenario B**: unbounded cache growth, triggerable without a deploy
+- [ ] Sentry integrated, `release` = commit SHA
+- [ ] Distinctive log lines (e.g. `pool exhausted (10/10)`)
 - [ ] Deployed on Render
-- [ ] Rollback path verified manually via Render API (measure how long it takes!)
-- [ ] Share with team: service ID, API keys (via secure channel), `.env.example`
+- [ ] Rollback via Render API verified manually — **measure how long it takes** (drives demo timing)
+- [ ] Share with team: app URL, Render service ID, API keys (privately)
 
 **Deliverable by ~6h:** app deployed, Scenario A injectable, metrics visibly degrade.
 
 ---
 
-## P2 — MCP Connectors
+## P2 — MCP Connectors · Pranjal Negi
 
-**Depends on:** contracts. Use mock data until P1's app is live.
+**Contract:** [`mcp-tools.md`](contracts/mcp-tools.md) · **Depends on:** contracts only — use `MOCK=1` data until P1 is live.
+**Reference:** [`agent/spike/dummy-mcp.mjs`](agent/spike/dummy-mcp.mjs) is a working HTTP MCP server to copy from.
 
-- [ ] `db-mcp` (read): `get_pool_stats`, `get_slow_queries`, `get_lock_waits`
-- [ ] `cloud-mcp` (read): `get_service_status` (CPU, memory, restarts, current deploy)
-- [ ] `cloud-mcp` (write, approval-gated): `restart_service`, `scale_service`, `clear_cache`
-- [ ] GitHub: configure official GitHub MCP server in read-only mode (commits, diffs)
-- [ ] GitHub wrapper (write, approval-gated): `trigger_rollback`, optionally `create_pr`
-- [ ] Sentry: configure official Sentry MCP server (read-only)
-- [ ] Every tool has a mock mode (`MOCK=1`) returning contract-shaped data
+- [ ] `db-mcp` (port 7101) — read: `get_pool_stats`, `get_slow_queries`, `get_lock_waits`
+- [ ] `cloud-mcp` (port 7102) — read: `get_service_status`, `get_metrics`, `get_metrics_window`, `get_recent_errors` (Sentry)
+- [ ] `cloud-mcp` — write (`destructiveHint`): `restart_service`, `scale_service`, `clear_cache`
+- [ ] `github-mcp` (port 7103) — read: `list_recent_commits`, `get_commit_diff`
+- [ ] `github-mcp` — write (`destructiveHint`): `trigger_rollback` (stretch: `create_fix_pr`)
+- [ ] Every response includes `source` + `observedAt`
+- [ ] `MOCK=1` mode on every server — mocks match Scenario A and B signals
+- [ ] Register all three in TrueForge; confirm `GET /api/v1/mcp-servers/{name}/tools` lists them
 - [ ] Swap mocks → real APIs once P1 is deployed
 
-**Deliverable by ~6h:** all read tools return mock data; P3 can call them from the agent.
+**Deliverable by ~6h:** all three servers running in mock mode and visible in TrueForge.
 
 ---
 
-## P3 — Agent Brain
+## P3 — Agent Brain · Vaibhav Kumawat
 
-**Depends on:** TrueForge spike result, P2's mock tools.
+**Contracts:** [`trueforge.md`](contracts/trueforge.md), [`incident-report.schema.json`](contracts/incident-report.schema.json) · **Depends on:** P2's mock servers.
 
-- [ ] TrueForge spike (Phase 0) — go / no-go decision
-- [ ] Pin exact TrueForge npm version; read `docs/openapi.json` for session/turn API
-- [ ] AgentSpec wiring all MCP servers; mark write tools as requiring approval
-- [ ] SKILL.md:
-  - [ ] Only cite evidence retrieved from tools; every claim has a source
-  - [ ] Final answer must match `incident-report.schema.json`
-  - [ ] Distinguish code-level vs infra-level cause
-  - [ ] After action: re-poll health over a window, report resolved / mitigated / not resolved
-- [ ] Pin model version
+- [ ] Live approval spike (Phase 0)
+- [ ] Setup script that registers model provider + 3 MCP servers + the `incident-investigator` agent via the API (so anyone can recreate TrueForge state in one command)
+- [ ] AgentSpec: all MCP servers, write tools in `require_approval_for_tools`, `response_format` = report schema, disable `dynamic_sub_agents` / `ask_user_questions` for determinism
+- [ ] SKILL.md / instructions:
+  - [ ] Only cite evidence retrieved from tools; every claim names its tool
+  - [ ] Distinguish code-level vs infra-level cause (check commits in incident window)
+  - [ ] Propose exactly one whitelisted action
+  - [ ] After action: `get_metrics_window` for 60s → resolved / mitigated / not_resolved
+- [ ] Pin model id
+- [ ] Confirm exact `model.message` / tool-call event shape and document it for P4 in `trueforge.md`
 - [ ] Eval script: run each scenario 10+ times, log accuracy
 
-**Deliverable by ~8h:** agent diagnoses Scenario A correctly against mocks.
+**Deliverable by ~8h:** agent diagnoses Scenario A correctly against mocks and pauses on `trigger_rollback`.
 
 ---
 
-## P4 — Backend, Dashboard & Demo
+## P4 — Backend, Dashboard & Demo · Arvind Kumar
 
-**Depends on:** contracts only. Use a fake incident JSON until P3 is ready.
+**Contract:** [`backend-api.md`](contracts/backend-api.md) · **Depends on:** contracts only — use a fake incident JSON until P3 is ready.
 
-- [ ] Express backend:
-  - [ ] `POST /api/incidents` — start a session (manual "simulate" trigger)
-  - [ ] `GET /api/incidents` / `GET /api/incidents/:id`
-  - [ ] `POST /api/incidents/:id/approve` and `/reject` → proxy to TrueForge
-- [ ] Dashboard (one page): incident feed, status, confidence, root cause, evidence, Approve/Reject button, before/after metrics, deep link to TrueForge session
-- [ ] "Simulate incident" button → calls P1's inject endpoint + creates incident
+- [ ] Express backend (port 4000):
+  - [ ] `POST /api/incidents` — inject scenario + create TrueForge session + start turn
+  - [ ] `GET /api/incidents`, `GET /api/incidents/:id` — status derived from turn events
+  - [ ] `POST /api/incidents/:id/approve` / `reject` → `user.tool_approval`
+  - [ ] `POST /api/demo/reset`, `GET /api/metrics`
+- [ ] Dashboard (one page, port 5173): incident feed, status, confidence, root cause, evidence list, pending action + Approve/Reject, live metrics chart, before/after, link to TrueForge session
+- [ ] "Simulate incident" buttons for Scenario A and B
 - [ ] **Demo script — start Day 1**, update as features land
-- [ ] Pitch deck / README
+- [ ] Pitch deck
 - [ ] Record backup demo video (after 24h checkpoint)
 
-**Deliverable by ~6h:** dashboard renders a fake incident end to end, approve button hits backend.
+**Deliverable by ~6h:** dashboard renders a fake incident end to end; Approve button hits the backend.
 
 ---
 
@@ -137,7 +131,7 @@ Peak/
 
 | Hour | Milestone | Done? |
 |---|---|---|
-| 2 | Contracts agreed, TrueForge go/no-go decided | [ ] |
+| 2 | Contracts frozen, live approval spike passed | [ ] |
 | 8 | Scenario A end-to-end **with mocks**: trigger → diagnosis → approve → mock execute | [ ] |
 | 16 | Scenario A end-to-end **on real infra**, real rollback, verified recovery | [ ] |
 | 24 | Scenario B works — **FEATURE FREEZE** | [ ] |
@@ -153,6 +147,6 @@ After Hour 24: bug fixes, prompt hardening, and demo polish only. No new feature
 
 - **Contracts are frozen after kickoff.** Changing one = ping the whole team first.
 - **Branches:** `p1/...`, `p2/...`, `p3/...`, `p4/...`; merge to `main` via small PRs, keep `main` runnable.
-- **Secrets:** never commit. Each package has `.env.example`; share real values privately.
+- **Secrets:** never commit. Copy `.env.example` → `.env`; share real values privately.
 - **Blocked > 30 min?** Say so in the team chat immediately.
 - **Status update** at every checkpoint: done / next / blocked.
