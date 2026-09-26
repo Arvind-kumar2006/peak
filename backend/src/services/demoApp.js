@@ -69,7 +69,7 @@ export function createDemoApp() {
 
   return {
     async inject(scenario) {
-      if (!(await isReachable()) && config.mockWorld.url) {
+      if (config.mockWorld.url) {
         try {
           const result = await mockWorld('POST', '/mock/state', { scenario: MOCK_SCENARIOS[scenario] ?? scenario });
           logger.info('scenario injected into the MCP mock world', { scenario, result });
@@ -93,7 +93,7 @@ export function createDemoApp() {
     },
 
     async reset() {
-      if (!(await isReachable()) && config.mockWorld.url) {
+      if (config.mockWorld.url) {
         const result = await mockWorld('POST', '/mock/state', { scenario: 'healthy' });
         logger.info('mock world reset', { result });
         return result;
@@ -114,19 +114,22 @@ export function createDemoApp() {
      * audience think synthetic numbers are real.
      */
     async metrics() {
+      // MOCK_WORLD_URL set = the agent's MCP tools read the mock world, so the chart
+      // must too — otherwise it charts an app the agent never looked at.
+      if (config.mockWorld.url) {
+        try {
+          return { ...(await mockWorld('GET', '/mock/metrics')), source: 'mock' };
+        } catch (err) {
+          logger.warn('mock world metrics read failed, synthesising', { err: err.message });
+          return { ...syntheticMetrics(), source: 'synthetic' };
+        }
+      }
       if (await isReachable()) {
         try {
           const real = await call('GET', '/metrics');
           return { ...real, source: 'demo-app' };
         } catch (err) {
           logger.warn('metrics read failed, synthesising', { err: err.message });
-        }
-      }
-      if (config.mockWorld.url) {
-        try {
-          return { ...(await mockWorld('GET', '/mock/metrics')), source: 'mock' };
-        } catch (err) {
-          logger.warn('mock world metrics read failed, synthesising', { err: err.message });
         }
       }
       return { ...syntheticMetrics(), source: 'synthetic' };

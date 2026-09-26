@@ -7,3 +7,4 @@ node_modules/
 dist/
 .next/
 agent/eval-results/
+logs/

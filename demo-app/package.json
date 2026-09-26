@@ -8,13 +8,13 @@
     "node": ">=22.14"
   },
   "scripts": {
-    "start": "node --expose-gc src/index.js",
-    "dev": "node --expose-gc --watch src/index.js",
-    "db:setup": "node scripts/db-setup.mjs",
-    "db:reset": "node scripts/db-setup.mjs --reset",
-    "load": "node scripts/load.js",
-    "smoke": "node test/smoke.mjs",
-    "smoke:scenario-b": "node test/scenario-b-volume.mjs"
+    "start": "node --env-file-if-exists=.env --network-family-autoselection-attempt-timeout=3000 --expose-gc src/index.js",
+    "dev": "node --env-file-if-exists=.env --network-family-autoselection-attempt-timeout=3000 --expose-gc --watch src/index.js",
+    "db:setup": "node --env-file-if-exists=.env --network-family-autoselection-attempt-timeout=3000 scripts/db-setup.mjs",
+    "db:reset": "node --env-file-if-exists=.env --network-family-autoselection-attempt-timeout=3000 scripts/db-setup.mjs --reset",
+    "load": "node --env-file-if-exists=.env --network-family-autoselection-attempt-timeout=3000 scripts/load.js",
+    "smoke": "node --env-file-if-exists=.env --network-family-autoselection-attempt-timeout=3000 test/smoke.mjs",
+    "smoke:scenario-b": "node --env-file-if-exists=.env --network-family-autoselection-attempt-timeout=3000 test/scenario-b-volume.mjs"
   },
   "dependencies": {
     "@sentry/node": "^8.47.0",
