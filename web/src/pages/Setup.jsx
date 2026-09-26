@@ -83,7 +83,7 @@ function SourceCard({ kind, integration, onChange }) {
             <button className="ghost small" onClick={() => setEditing(true)}>
               Change
             </button>
-            <button className="ghost small danger-text" onClick={remove}>
+            <button className="outline-danger small" onClick={remove}>
               Disconnect
             </button>
           </div>
@@ -227,7 +227,7 @@ function GithubCard({ integration, onChange }) {
           <button className="ghost small" onClick={() => setEditing(true)}>
             Change
           </button>
-          <button className="ghost small danger-text" onClick={remove}>
+          <button className="outline-danger small" onClick={remove}>
             Disconnect
           </button>
         </div>
@@ -380,8 +380,9 @@ export default function Setup() {
     <div className="page">
       <div className="page-head">
         <div>
+          <p className="eyebrow">Setup</p>
           <h1>Connections</h1>
-          <p className="muted">Connect your code, your errors and your team's channel, then tell PEAK which services to watch.</p>
+          <p className="page-copy">Connect your code, your errors and your team's channel, then tell PEAK which services to watch. Each person connects their own accounts.</p>
         </div>
         {data.setupComplete && (
           <Link className="button" to="/">

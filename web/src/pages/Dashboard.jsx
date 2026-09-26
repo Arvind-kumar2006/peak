@@ -151,9 +151,10 @@ export default function Dashboard() {
     <div className="page">
       <div className="page-head">
         <div>
+          <p className="eyebrow">Monitor</p>
           <h1>Production</h1>
-          <p className="muted small">
-            Checked every {monitor.intervalSec}s · alert at {monitor.errorThresholdPerMin} errors/min or {monitor.failedChecksToAlert} failed health checks
+          <p className="page-copy">
+            Checked every {monitor.intervalSec}s · alerts at {monitor.errorThresholdPerMin} errors/min, {monitor.failedChecksToAlert} failed health checks, or a service's latency threshold
           </p>
         </div>
         <Badge tone={status.tone} pulse={status.tone !== 'good' && status.tone !== 'muted'}>
@@ -170,7 +171,7 @@ export default function Dashboard() {
 
       {active.map((inc) => (
         <Link key={inc.id} to={`/incidents/${inc.id}`} className={`active-incident ${inc.status}`}>
-          <div>
+          <div className="body">
             <div className="row">
               <Badge tone={STATUS[inc.status].tone} pulse>
                 {STATUS[inc.status].label}
@@ -182,7 +183,9 @@ export default function Dashboard() {
             <h3>{inc.title}</h3>
             {inc.diagnosis && <p>{inc.diagnosis.summary}</p>}
           </div>
-          <span className="button">{inc.status === 'awaiting_approval' ? 'Review fix →' : 'Open →'}</span>
+          <div className="go">
+            <span className="button">{inc.status === 'awaiting_approval' ? 'Review fix →' : 'Open →'}</span>
+          </div>
         </Link>
       ))}
 
@@ -196,7 +199,10 @@ export default function Dashboard() {
             {services.map((s) => (
               <div key={s.id} className="service">
                 <div className="service-main">
-                  <Badge tone={SERVICE_STATUS[s.status]?.tone}>{s.name}</Badge>
+                  <span className="service-name">
+                    <span className={`status-dot ${s.status}`} aria-hidden="true" />
+                    {s.name}
+                  </span>
                   <span className="muted small">
                     {SERVICE_STATUS[s.status]?.label}
                     {s.release && (
@@ -213,7 +219,7 @@ export default function Dashboard() {
                 <div className="service-num">
                   {s.samples.at(-1)?.errorsPerMin != null ? (
                     <>
-                      <strong>{s.samples.at(-1).errorsPerMin}</strong>
+                      <strong className={s.samples.at(-1).errorsPerMin >= monitor.errorThresholdPerMin ? 'hot' : ''}>{s.samples.at(-1).errorsPerMin}</strong>
                       <span className="muted small"> err/min</span>
                     </>
                   ) : s.samples.at(-1)?.latencyMs != null ? (
@@ -233,6 +239,7 @@ export default function Dashboard() {
         {incidents.length === 0 ? (
           <p className="muted">No incidents yet. PEAK opens one when a service crosses its alert threshold.</p>
         ) : (
+          <div className="table-wrap">
           <table className="table clickable">
             <thead>
               <tr>
@@ -261,6 +268,7 @@ export default function Dashboard() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
         {paging.error && <div className="error-note">Couldn't load older incidents: {paging.error.message}</div>}
         {paging.hasMore && (

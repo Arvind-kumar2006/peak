@@ -94,7 +94,18 @@ function IncidentChart({ samples, incident }) {
 function Diagnosis({ d }) {
   if (!d) return null;
   return (
-    <Card title="Root cause" actions={<span className="muted small">confidence {Math.round(d.confidence * 100)}%</span>}>
+    <Card
+      title="Root cause"
+      actions={
+        <span className="confidence">
+          Confidence
+          <span className="bar" aria-hidden="true">
+            <span style={{ width: `${Math.round(d.confidence * 100)}%` }} />
+          </span>
+          <strong>{Math.round(d.confidence * 100)}%</strong>
+        </span>
+      }
+    >
       <p className="lead">{d.summary}</p>
       <p>{d.root_cause}</p>
       {d.suspect_commit && (
@@ -174,16 +185,16 @@ function ProposedFix({ incident, onDone }) {
       <p className="muted small">PEAK adds a revert commit on top of the branch. History is not rewritten.</p>
       {waiting && !rejecting && (
         <div className="row">
-          <button onClick={() => act('approve')} disabled={!!busy}>
+          <button className="approve" onClick={() => act('approve')} disabled={!!busy}>
             {busy === 'approve' ? 'Approving…' : 'Approve fix'}
           </button>
-          <button className="secondary" onClick={() => setRejecting(true)} disabled={!!busy}>
+          <button className="outline-danger" onClick={() => setRejecting(true)} disabled={!!busy}>
             Reject
           </button>
         </div>
       )}
       {waiting && rejecting && (
-        <div className="reject">
+        <div className="reject-row">
           <input placeholder="Why? (optional)" value={reason} onChange={(e) => setReason(e.target.value)} autoFocus />
           <button className="danger" onClick={() => act('reject')} disabled={!!busy}>
             {busy === 'reject' ? 'Rejecting…' : 'Reject fix'}
@@ -293,7 +304,7 @@ function IncidentActions({ incident, onDone }) {
   return (
     <div className="incident-actions">
       {closing ? (
-        <div className="reject">
+        <div className="reject-row">
           <input placeholder="What fixed it? (optional)" value={note} onChange={(e) => setNote(e.target.value)} autoFocus />
           <button onClick={() => act('resolve', { note })} disabled={!!busy}>
             {busy === 'resolve' ? 'Closing…' : 'Mark resolved'}
@@ -365,7 +376,7 @@ export default function Incident() {
 
   return (
     <div className="page">
-      <Link to="/" className="muted small">
+      <Link to="/" className="back">
         ← Dashboard
       </Link>
       <div className="page-head">
