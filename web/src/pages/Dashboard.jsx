@@ -1,0 +1,171 @@
+import { Link } from 'react-router-dom';
+import { useLive, useNow } from '../hooks.js';
+import { Badge, Card, Sparkline } from '../components/ui.jsx';
+import { STATUS, SERVICE_STATUS, ago, duration, short } from '../format.js';
+
+const OPEN = ['investigating', 'awaiting_approval', 'fixing', 'verifying'];
+
+function overall(services, incidents) {
+  if (incidents.some((i) => i.status === 'awaiting_approval')) return { tone: 'accent', label: 'Fix waiting for approval' };
+  if (incidents.some((i) => OPEN.includes(i.status))) return { tone: 'warn', label: 'Incident in progress' };
+  if (services.some((s) => s.status === 'down')) return { tone: 'bad', label: 'Service down' };
+  if (services.some((s) => s.status === 'degraded')) return { tone: 'warn', label: 'Degraded' };
+  if (services.length && services.every((s) => s.status === 'healthy')) return { tone: 'good', label: 'All systems healthy' };
+  return { tone: 'muted', label: 'Waiting for data' };
+}
+
+function SetupChecklist({ integrations, services }) {
+  const steps = [
+    ...integrations.map((i) => ({ done: i.connected, label: `Connect ${i.kind === 'github' ? 'GitHub' : i.kind[0].toUpperCase() + i.kind.slice(1)}` })),
+    { done: services.length > 0, label: 'Add a service to watch' },
+  ];
+  return (
+    <Card className="checklist">
+      <div className="row between">
+        <div>
+          <h2>Finish setting up</h2>
+          <ul>
+            {steps.map((s) => (
+              <li key={s.label} className={s.done ? 'done' : ''}>
+                {s.done ? '✓' : '○'} {s.label}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <Link className="button" to="/setup">
+          Continue setup
+        </Link>
+      </div>
+    </Card>
+  );
+}
+
+export default function Dashboard() {
+  const { data, error } = useLive('/overview');
+  const now = useNow();
+  if (error) return <div className="center error-note">{error.message}</div>;
+  if (!data) return <div className="center muted">Loading…</div>;
+
+  const { services, incidents, integrations, agent, monitor } = data;
+  const status = overall(services, incidents);
+  const active = incidents.filter((i) => OPEN.includes(i.status));
+  const serviceName = Object.fromEntries(services.map((s) => [s.id, s.name]));
+
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <h1>Production</h1>
+          <p className="muted small">
+            Checked every {monitor.intervalSec}s · alert at {monitor.errorThresholdPerMin} errors/min or {monitor.failedChecksToAlert} failed health checks
+          </p>
+        </div>
+        <Badge tone={status.tone} pulse={status.tone !== 'good' && status.tone !== 'muted'}>
+          {status.label}
+        </Badge>
+      </div>
+
+      {!agent.ready && (
+        <div className="banner warn">
+          <strong>AI investigator offline.</strong> {agent.error ?? 'Connecting to TrueForge…'} Incidents are still detected, but not investigated.
+        </div>
+      )}
+      {!data.setupComplete && <SetupChecklist integrations={integrations} services={services} />}
+
+      {active.map((inc) => (
+        <Link key={inc.id} to={`/incidents/${inc.id}`} className={`active-incident ${inc.status}`}>
+          <div>
+            <div className="row">
+              <Badge tone={STATUS[inc.status].tone} pulse>
+                {STATUS[inc.status].label}
+              </Badge>
+              <span className="muted small">
+                {serviceName[inc.serviceId]} · {duration(now - new Date(inc.startedAt))}
+              </span>
+            </div>
+            <h3>{inc.title}</h3>
+            {inc.diagnosis && <p>{inc.diagnosis.summary}</p>}
+          </div>
+          <span className="button">{inc.status === 'awaiting_approval' ? 'Review fix →' : 'Open →'}</span>
+        </Link>
+      ))}
+
+      <Card title="Services">
+        {services.length === 0 ? (
+          <p className="muted">
+            No services yet. <Link to="/setup">Add one</Link>.
+          </p>
+        ) : (
+          <div className="services">
+            {services.map((s) => (
+              <div key={s.id} className="service">
+                <div className="service-main">
+                  <Badge tone={SERVICE_STATUS[s.status]?.tone}>{s.name}</Badge>
+                  <span className="muted small">
+                    {SERVICE_STATUS[s.status]?.label}
+                    {s.release && (
+                      <>
+                        {' '}
+                        · release <code>{short(s.release)}</code>
+                      </>
+                    )}
+                    {' · '}checked {ago(s.lastCheckedAt, now)}
+                  </span>
+                </div>
+                <Sparkline samples={s.samples} threshold={monitor.errorThresholdPerMin} />
+                <div className="service-num">
+                  {s.samples.at(-1)?.errorsPerMin != null ? (
+                    <>
+                      <strong>{s.samples.at(-1).errorsPerMin}</strong>
+                      <span className="muted small"> err/min</span>
+                    </>
+                  ) : s.samples.at(-1)?.latencyMs != null ? (
+                    <>
+                      <strong>{s.samples.at(-1).latencyMs}</strong>
+                      <span className="muted small"> ms</span>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card title="Recent incidents">
+        {incidents.length === 0 ? (
+          <p className="muted">No incidents yet. PEAK opens one when a service crosses its alert threshold.</p>
+        ) : (
+          <table className="table clickable">
+            <thead>
+              <tr>
+                <th>Incident</th>
+                <th>Service</th>
+                <th>Status</th>
+                <th>Cause</th>
+                <th>Started</th>
+                <th>Duration</th>
+              </tr>
+            </thead>
+            <tbody>
+              {incidents.map((i) => (
+                <tr key={i.id}>
+                  <td>
+                    <Link to={`/incidents/${i.id}`}>{i.title}</Link>
+                  </td>
+                  <td>{serviceName[i.serviceId] ?? '—'}</td>
+                  <td>
+                    <Badge tone={STATUS[i.status]?.tone}>{STATUS[i.status]?.label ?? i.status}</Badge>
+                  </td>
+                  <td className="small">{i.diagnosis?.suspect_commit ? <code>{short(i.diagnosis.suspect_commit.sha)}</code> : <span className="muted">—</span>}</td>
+                  <td className="muted small">{ago(i.startedAt, now)}</td>
+                  <td className="muted small">{duration((i.resolvedAt ? new Date(i.resolvedAt) : now) - new Date(i.startedAt))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+    </div>
+  );
+}

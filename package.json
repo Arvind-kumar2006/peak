@@ -1,0 +1,14 @@
+{
+  "name": "peak",
+  "private": true,
+  "type": "module",
+  "description": "PEAK — AI incident response: connect, monitor, detect, investigate, approve, fix, verify",
+  "engines": { "node": ">=22.14" },
+  "workspaces": ["server", "web"],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "npm run build -w web",
+    "start": "node --env-file-if-exists=.env server/src/index.js",
+    "test": "npm test -w server"
+  }
+}

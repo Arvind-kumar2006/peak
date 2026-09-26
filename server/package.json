@@ -1,0 +1,17 @@
+{
+  "name": "peak-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --disable-warning=ExperimentalWarning --env-file-if-exists=../.env --watch-path=src src/index.js",
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=../.env src/index.js",
+    "groq-proxy": "node model/groq-proxy.js",
+    "test": "node --disable-warning=ExperimentalWarning --test 'test/*.test.js'"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "diff": "^8.0.2",
+    "express": "^5.1.0",
+    "zod": "^3.25.0"
+  }
+}
