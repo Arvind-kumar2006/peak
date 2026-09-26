@@ -29,7 +29,7 @@ function stepState(inc) {
       st.key === 'verify' ? { ...st, label: 'Closed by hand', state: 'done' } : { ...st, state: done[st.key] ? 'done' : 'skipped' },
     );
   }
-  const current = { investigating: 'investigating', awaiting_approval: 'approval', fixing: 'fix', verifying: 'verify' }[s];
+  const current = { investigating: 'investigating', awaiting_approval: 'approval', fixing: 'fix', awaiting_merge: 'fix', verifying: 'verify' }[s];
   const failed = { rejected: 'approval', unresolved: 'verify', failed: inc.fix ? 'verify' : inc.approval ? 'fix' : 'investigating', needs_attention: 'approval' }[s];
   return STEPS.map((st) => ({ ...st, state: done[st.key] ? 'done' : st.key === current ? 'current' : st.key === failed ? 'failed' : 'todo' }));
 }
@@ -130,6 +130,33 @@ function Diagnosis({ d }) {
   );
 }
 
+// Unified diff, one block per file.
+function DiffView({ diffs }) {
+  return (
+    <div className="diff">
+      {diffs.map((d) => (
+        <div key={d.path} className="diff-file">
+          <div className="diff-head">
+            <span>{d.path}</span>
+            <span>{d.changed} lines</span>
+          </div>
+          <pre>
+            {d.patch
+              .split('\n')
+              .filter((l) => !l.startsWith('---') && !l.startsWith('+++') && !l.startsWith('====='))
+              .map((l, i) => (
+                <span key={i} className={l.startsWith('+') ? 'add' : l.startsWith('-') ? 'del' : l.startsWith('@@') ? 'hunk' : ''}>
+                  {l || ' '}
+                  {'\n'}
+                </span>
+              ))}
+          </pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ProposedFix({ incident, onDone }) {
   const fix = incident.diagnosis?.proposed_fix;
   const [busy, setBusy] = useState(null);
@@ -161,15 +188,26 @@ function ProposedFix({ incident, onDone }) {
 
   const waiting = incident.status === 'awaiting_approval';
   const c = fix.commit;
+  const patch = fix.type === 'patch';
   return (
-    <Card title="Proposed fix" className={`fix ${waiting ? 'waiting' : ''}`}>
-      <p className="lead">
-        Revert commit <code>{short(fix.sha)}</code>
-        {c?.message && <> — {c.message}</>}
-      </p>
+    <Card title={patch ? 'Proposed code fix' : 'Proposed fix'} className={`fix ${waiting ? 'waiting' : ''}`}>
+      {patch ? (
+        <p className="lead">{fix.title}</p>
+      ) : (
+        <p className="lead">
+          Revert commit <code>{short(fix.sha)}</code>
+          {c?.message && <> — {c.message}</>}
+        </p>
+      )}
       <p>{fix.reason}</p>
       {fix.expected_outcome && <p className="muted">Expected: {fix.expected_outcome}</p>}
-      {c && (
+      {patch && fix.preview && <DiffView diffs={fix.preview.diffs} />}
+      {patch && (
+        <p className="muted small">
+          {fix.preview?.changedLines} changed lines. On approval PEAK {fix.preview?.mode === 'push' ? 'commits this to the deployed branch' : 'opens a pull request; merging it ships the fix'}. The exact diff above is what gets applied.
+        </p>
+      )}
+      {!patch && c && (
         <p className="muted small">
           Files: {c.files.map((f) => <code key={f}>{f}</code>).reduce((a, b) => [a, ' ', b])}
           {c.url && (
@@ -182,7 +220,7 @@ function ProposedFix({ incident, onDone }) {
           )}
         </p>
       )}
-      <p className="muted small">PEAK adds a revert commit on top of the branch. History is not rewritten.</p>
+      {!patch && <p className="muted small">PEAK adds a revert commit on top of the branch. History is not rewritten.</p>}
       {waiting && !rejecting && (
         <div className="row">
           <button className="approve" onClick={() => act('approve')} disabled={!!busy}>
@@ -210,9 +248,19 @@ function ProposedFix({ incident, onDone }) {
           {incident.approval.reason && <> — “{incident.approval.reason}”</>}
         </p>
       )}
-      {incident.fix && (
+      {incident.fix?.pullRequest && (
         <p className="small">
-          Applied as <code>{short(incident.fix.revertSha)}</code> on <code>{incident.fix.branch}</code>
+          Pull request{' '}
+          <a className="link" href={incident.fix.pullRequest.url} target="_blank" rel="noreferrer">
+            #{incident.fix.pullRequest.number}
+          </a>{' '}
+          on <code>{incident.fix.branch}</code>
+          {incident.status === 'awaiting_merge' ? ' — waiting for it to be merged' : incident.fix.mergedAt ? ` — merged as ${short(incident.fix.commitSha)}` : ''}
+        </p>
+      )}
+      {incident.fix && !incident.fix.pullRequest && (
+        <p className="small">
+          Applied as <code>{short(incident.fix.commitSha ?? incident.fix.revertSha)}</code> on <code>{incident.fix.branch}</code>
           {incident.fix.url && (
             <>
               {' · '}
@@ -372,7 +420,7 @@ export default function Incident() {
   if (!data) return <div className="center muted">Loading…</div>;
   const { incident, service, events, samples } = data;
   const st = STATUS[incident.status];
-  const open = ['investigating', 'awaiting_approval', 'fixing', 'verifying'].includes(incident.status);
+  const open = ['investigating', 'awaiting_approval', 'fixing', 'awaiting_merge', 'verifying'].includes(incident.status);
 
   return (
     <div className="page">

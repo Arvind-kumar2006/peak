@@ -387,6 +387,44 @@ function SlackCard({ integration, onChange }) {
   );
 }
 
+// How an approved code fix (not a revert) lands in the repository.
+function FixModeCard({ settings, onChange }) {
+  const [error, setError] = useState(null);
+  const mode = settings?.fixMode ?? 'pr';
+  const choose = async (fixMode) => {
+    setError(null);
+    try {
+      await api('/workspace/settings', { method: 'PUT', body: { fixMode } });
+      onChange();
+    } catch (err) {
+      setError(err);
+    }
+  };
+  const options = [
+    ['pr', 'Open a pull request', 'Recommended. Your CI runs and someone merges it; PEAK verifies after the merge deploys.'],
+    ['push', 'Commit to the branch', 'Fastest. The approved change goes straight to the deployed branch, like a revert.'],
+  ];
+  return (
+    <Card title="Code fixes">
+      <p className="muted small" style={{ marginTop: 0 }}>
+        When a small code change fixes an incident better than a revert, PEAK proposes the exact diff for approval. Choose how an approved fix is applied. Reverts always go straight to the branch.
+      </p>
+      <div className="choices" role="radiogroup" aria-label="How approved code fixes are applied">
+        {options.map(([value, label, hint]) => (
+          <label key={value} className={`choice ${mode === value ? 'selected' : ''}`}>
+            <input type="radio" name="fixMode" checked={mode === value} onChange={() => choose(value)} />
+            <span>
+              <strong>{label}</strong>
+              <span className="muted small">{hint}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+      <ErrorNote error={error} />
+    </Card>
+  );
+}
+
 function ServiceForm({ initial, projects, onDone, onCancel }) {
   const [form, setForm] = useState(initial ?? { name: '', healthUrl: '', sentryProject: '', latencyThresholdMs: '' });
   const [busy, setBusy] = useState(false);
@@ -486,6 +524,8 @@ export default function Setup() {
         <SlackCard integration={byKind.slack} onChange={reload} />
         <SourceCard kind="sentry" integration={byKind.sentry} onChange={reload} />
       </div>
+
+      <FixModeCard settings={data.settings} onChange={reload} />
 
       <Card title="Services" actions={!adding && data.services.length > 0 && <button className="small" onClick={() => setAdding(true)}>Add service</button>}>
         {data.services.length === 0 || adding ? (

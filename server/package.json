@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "diff": "^9.0.0",
     "express": "^5.1.0",
     "pg": "^8.23.0",
     "zod": "^3.25.0"

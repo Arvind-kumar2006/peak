@@ -3,6 +3,20 @@ import { db, now, newId, json, parse } from './db.js';
 
 const marks = (list) => list.map(() => '?').join(',');
 
+// ——— Workspace settings ———
+
+// fixMode: how an approved code fix lands. 'pr' (default) opens a pull request; 'push' commits to the branch.
+const DEFAULT_SETTINGS = { fixMode: 'pr' };
+export async function getWorkspaceSettings(workspaceId) {
+  const row = await db.one('SELECT settings FROM workspaces WHERE id = ?', workspaceId);
+  return { ...DEFAULT_SETTINGS, ...parse(row?.settings ?? '{}') };
+}
+export async function updateWorkspaceSettings(workspaceId, patch) {
+  const next = { ...(await getWorkspaceSettings(workspaceId)), ...patch };
+  await db.run('UPDATE workspaces SET settings = ? WHERE id = ?', json(next), workspaceId);
+  return next;
+}
+
 // ——— Services ———
 
 const toService = (r) =>
@@ -104,7 +118,8 @@ export const pruneSamples = () => db.run('DELETE FROM samples WHERE at < ?', new
 
 // ——— Incidents ———
 
-export const OPEN_STATUSES = ['investigating', 'awaiting_approval', 'fixing', 'verifying'];
+// awaiting_merge: a code fix was opened as a pull request and PEAK waits for it to be merged.
+export const OPEN_STATUSES = ['investigating', 'awaiting_approval', 'fixing', 'awaiting_merge', 'verifying'];
 
 const INCIDENT_JSON = ['signal', 'diagnosis', 'pending_action', 'approval', 'fix', 'verification', 'agent', 'slack', 'closure'];
 const INCIDENT_COLUMNS = new Set([...INCIDENT_JSON, 'title', 'status', 'resolved_at']);

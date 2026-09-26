@@ -11,6 +11,7 @@ import { getIncident, getService, transition, addEvent, listEvents, incidentsInS
 import { notify } from '../notify.js';
 import { startVerification } from '../verify.js';
 import { publish } from '../events.js';
+import { startMergeWatch } from '../merges.js';
 
 // Bearer token TrueForge must send to PEAK's MCP endpoint; loaded from the database in initAgent().
 let mcpToken = null;
@@ -46,10 +47,10 @@ export async function initAgent() {
         name: MCP_SERVER_NAME,
         url: `${config.serverUrl}/mcp`,
         headers: { Authorization: `Bearer ${mcpToken}` },
-        description: 'PEAK: incident details, Sentry errors, GitHub commits and diffs, service health, diagnosis report, and revert_commit',
+        description: 'PEAK: incident details, Sentry errors, GitHub commits and diffs, service health, diagnosis report, revert_commit and apply_patch',
       });
       const tools = await tf.api('GET', `/mcp-servers/${MCP_SERVER_NAME}/tools`);
-      log(`TrueForge ready — tools: ${tools.map((t) => t.name).join(', ')}`);
+      log(`TrueForge ready (${MCP_SERVER_NAME}) — tools: ${tools.map((t) => t.name).join(', ')}`);
       Object.assign(agentStatus, { ready: true, error: null });
       await resumeAfterRestart();
       return;
@@ -126,8 +127,8 @@ async function settle(incidentId, session, result) {
     return await changed(incidentId);
   }
   if (incident.status === 'fixing' && !incident.fix) {
-    const toolError = (await listEvents(incidentId)).findLast((e) => e.kind === 'agent.tool_error' && e.detail?.tool === 'revert_commit');
-    return await fail(incidentId, toolError ? `Revert failed: ${toolError.detail.error}` : 'The fix was approved but the agent did not apply it');
+    const toolError = (await listEvents(incidentId)).findLast((e) => e.kind === 'agent.tool_error' && ['revert_commit', 'apply_patch'].includes(e.detail?.tool));
+    return await fail(incidentId, toolError ? `Applying the fix failed: ${toolError.detail.error}` : 'The fix was approved but the agent did not apply it');
   }
   if (incident.status === 'fixing' && incident.fix) startVerification(incidentId);
   publish(incident.workspaceId);
@@ -222,6 +223,7 @@ export async function rerun(incidentId, { by }) {
 
 // After a server restart: re-attach to turns still running and restart verifications.
 async function resumeAfterRestart() {
+  for (const inc of await incidentsInStatus(['awaiting_merge'])) startMergeWatch(inc.id);
   for (const inc of await incidentsInStatus(['investigating', 'fixing', 'verifying'])) {
     if (inc.fix) {
       if (inc.status === 'verifying') await transition(inc.id, ['verifying'], 'fixing');

@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS oauth_states (
   purpose TEXT NOT NULL DEFAULT 'login',
   workspace_id TEXT
 );
+-- Added after the first release; IF NOT EXISTS makes it a no-op once applied.
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS settings TEXT NOT NULL DEFAULT '{}';
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

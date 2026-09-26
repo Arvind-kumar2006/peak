@@ -15,7 +15,7 @@ PEAK watches your production services. When one breaks, an AI agent reads the Se
              │                │ get_error_details · list_recent_commits ·   │
              │                │ get_commit_diff · get_file ·                │
              │                │ check_service_health · submit_diagnosis ·   │
-             │                │ revert_commit (approval required)           │
+             │                │ revert_commit · apply_patch (approval)      │
              │                └─────────────────────────────────────────────┘
              ▼
  Dashboard (React) ◀── SSE ── PEAK server (Express + Postgres) ──▶ Slack
@@ -27,7 +27,11 @@ PEAK watches your production services. When one breaks, an AI agent reads the Se
 2. **Investigate.** A TrueForge session runs the runbook in [`server/src/agent/instructions.md`](server/src/agent/instructions.md): read the errors and stack traces, list the commits, read the diffs, and tie the error to one commit. Each tool call shows up live on the incident timeline.
 3. **Diagnose.** The agent calls `submit_diagnosis` with the root cause, confidence, cited evidence and the proposed fix. The dashboard and Slack show it.
 4. **Approve.** The agent calls `revert_commit`, and TrueForge pauses the turn until someone decides. A human clicks **Approve** or **Reject** on the dashboard, or in Slack if interactivity is set up. `revert_commit` also refuses to run unless PEAK recorded the approval and the SHA matches the diagnosis.
-5. **Fix.** PEAK adds a revert commit on top of the branch through the GitHub API; history is not rewritten. It refuses if a later commit touched the same files. Your CD pipeline deploys the revert.
+5. **Fix.** Two kinds, both behind the same approval gate:
+   - **Revert** (preferred when one recent commit caused it): PEAK adds a revert commit on top of the branch; history is not rewritten. It refuses if a later commit touched the same files.
+   - **Code fix** (when no single commit is to blame, or the culprit also holds changes that must stay): the agent proposes exact find/replace edits. PEAK validates them against the branch and shows the diff for approval: at most 3 files and 60 changed lines, existing files only, never CI, dependency manifests, lockfiles, secrets or infrastructure. On approval `apply_patch` applies exactly that stored diff, either as a **pull request** (default; PEAK waits for the merge, then verifies against the merge commit) or as a **direct commit**. Choose on the Connections page under *Code fixes*.
+
+   Your CD pipeline deploys the fix.
 6. **Verify.** If the health endpoint reports a `release`/`commit`/`sha`, PEAK waits until the revert is live. Then it watches health and errors for `VERIFY_WINDOW_SEC`. The result is **Resolved** or **Not recovered**, with before/after errors/min. The Slack message is updated.
 
 **Humans can always override.** Any incident can be **marked resolved** by hand, with a note ("fixed it myself", false alarm); this also stops the agent. Failed or handed-off incidents can be **re-run**. A service can be **muted** for 30m/1h/4h during deploys or maintenance: checks keep running, but no incident opens. Each service can also have a **latency threshold**, so slow responses alert before the service goes down.

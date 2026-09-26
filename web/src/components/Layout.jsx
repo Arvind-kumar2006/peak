@@ -5,7 +5,7 @@ import { api } from '../api.js';
 import { useLive } from '../hooks.js';
 import { useTheme } from '../theme.js';
 
-const OPEN = ['investigating', 'awaiting_approval', 'fixing', 'verifying'];
+const OPEN = ['investigating', 'awaiting_approval', 'fixing', 'awaiting_merge', 'verifying'];
 
 const Icon = ({ d, size = 17 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
