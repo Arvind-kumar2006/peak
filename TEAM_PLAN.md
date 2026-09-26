@@ -97,17 +97,17 @@ and never commits, giving `db-mcp` a second independent source of evidence.
 **Contract:** [`mcp-tools.md`](contracts/mcp-tools.md) · **Depends on:** contracts only — use `MOCK=1` data until P1 is live.
 **Reference:** [`agent/spike/dummy-mcp.mjs`](agent/spike/dummy-mcp.mjs) is a working HTTP MCP server to copy from.
 
-- [ ] `db-mcp` (port 7101) — read: `get_pool_stats`, `get_slow_queries`, `get_lock_waits`
-- [ ] `cloud-mcp` (port 7102) — read: `get_service_status`, `get_metrics`, `get_metrics_window`, `get_recent_errors` (Sentry)
-- [ ] `cloud-mcp` — write (`destructiveHint`): `restart_service`, `scale_service`, `clear_cache`
-- [ ] `github-mcp` (port 7103) — read: `list_recent_commits`, `get_commit_diff`
-- [ ] `github-mcp` — write (`destructiveHint`): `trigger_rollback` (stretch: `create_fix_pr`)
-- [ ] Every response includes `source` + `observedAt`
-- [ ] `MOCK=1` mode on every server — mocks match Scenario A and B signals
-- [ ] Register all three in TrueForge; confirm `GET /api/v1/mcp-servers/{name}/tools` lists them
+- [x] `db-mcp` (port 7101) — read: `get_pool_stats`, `get_slow_queries`, `get_lock_waits`
+- [x] `cloud-mcp` (port 7102) — read: `get_service_status`, `get_metrics`, `get_metrics_window`, `get_recent_errors` (Sentry)
+- [x] `cloud-mcp` — write (`destructiveHint`): `restart_service`, `scale_service`, `clear_cache`
+- [x] `github-mcp` (port 7103) — read: `list_recent_commits`, `get_commit_diff`
+- [x] `github-mcp` — write (`destructiveHint`): `trigger_rollback` (stretch: `create_fix_pr`)
+- [x] Every response includes `source` + `observedAt`
+- [x] `MOCK=1` mode on every server — mocks match Scenario A and B signals
+- [x] Register all three in TrueForge; confirm `GET /api/v1/mcp-servers/{name}/tools` lists them
 - [ ] Swap mocks → real APIs once P1 is deployed
 
-**Deliverable by ~6h:** all three servers running in mock mode and visible in TrueForge.
+**Deliverable by ~6h:** all three servers running in mock mode and visible in TrueForge. ✅ DONE
 
 ---
 
