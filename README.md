@@ -1,137 +1,92 @@
-# PEAK — AI Production Incident Response Agent
+# PEAK: AI incident response
 
-PEAK closes the loop on production incidents: **detect → investigate → diagnose → propose fix → execute (with human approval) → verify recovery.**
+**Connect → Monitor → Detect → Investigate → Ask approval → Fix → Verify**
 
-It plugs into the stack a team already has (GitHub, Sentry, Postgres, Render), finds the root cause with cited evidence, proposes a single whitelisted fix, waits for a human to click **Approve**, then checks that the service actually recovered.
-
-> Hackathon project. See [PRD.md](PRD.md) for the product spec, [TEAM_PLAN.md](TEAM_PLAN.md) for who owns what, and [contracts/](contracts/) for the interfaces between components.
-
-## How it works
+PEAK watches your production services. When one breaks, an AI agent reads the Sentry errors and recent GitHub commits, finds the commit that caused it, and posts the root cause to Slack. After a human clicks **Approve**, it reverts that commit and confirms the service recovered.
 
 ```
- Simulate incident ─┐
-                    ▼
-            ┌──────────────┐   REST    ┌────────────┐
-            │  Dashboard   │◀────────▶│  Backend   │  thin proxy, no reasoning
-            │   :5173      │           │   :4000    │
-            └──────────────┘           └─────┬──────┘
-                                             │ sessions / turns / approvals
-                                             ▼
-                                    ┌──────────────────┐
-                                    │    TrueForge     │  agent loop, approval gate,
-                                    │      :8790       │  session history, UI
-                                    └───┬─────┬─────┬──┘
-                          MCP over HTTP │     │     │
-                     ┌──────────────────┘     │     └──────────────────┐
-                     ▼                        ▼                        ▼
-              ┌────────────┐          ┌──────────────┐         ┌──────────────┐
-              │  db-mcp    │          │  cloud-mcp   │         │  github-mcp  │
-              │  :7101     │          │  :7102       │         │  :7103       │
-              │  read only │          │ read + write │         │ read + write │
-              └─────┬──────┘          └──────┬───────┘         └──────┬───────┘
-                    ▼                        ▼                        ▼
-                Postgres           Demo app / Render / Sentry       GitHub
+ Health URL ─┐                        ┌──────────── TrueForge ────────────┐
+ Sentry ─────┼─▶ Monitor ─▶ Incident ─▶│ agent loop · approval gate · model │
+             │   (every 10s)           │ fallback (TrueFoundry/Groq/…) │
+             │                         └───────────────┬───────────────────┘
+             │                                         │ MCP (/mcp, bearer)
+             │                ┌────────────────────────▼───────────────────┐
+             │                │ PEAK tools: get_incident · list_errors ·    │
+             │                │ get_error_details · list_recent_commits ·   │
+             │                │ get_commit_diff · get_file ·                │
+             │                │ check_service_health · submit_diagnosis ·   │
+             │                │ revert_commit (approval required)           │
+             │                └─────────────────────────────────────────────┘
+             ▼
+ Dashboard (React) ◀── SSE ── PEAK server (Express + Postgres) ──▶ Slack
 ```
 
-1. An incident is triggered, and the backend starts a TrueForge session.
-2. The agent investigates with read-only MCP tools: pool stats, metrics, Sentry errors, recent commits.
-3. It calls `submit_diagnosis` with a structured report (root cause, confidence, cited evidence, proposed fix) matching [`incident-report.schema.json`](contracts/incident-report.schema.json). The dashboard shows it while the action waits for approval.
-4. It calls a whitelisted write tool (`trigger_rollback`, `restart_service`, `scale_service`, `clear_cache`). **TrueForge pauses the turn.**
-5. A human clicks Approve or Reject on the dashboard, and the backend resumes the turn.
-6. On approve, the tool runs. The agent then watches the metrics for 60s and reports **resolved / mitigated / not resolved**.
+## The incident loop
 
-### Safety
+1. **Detect.** Every `MONITOR_INTERVAL_SEC` PEAK calls each service's health URL and counts its Sentry events from the last minute. An incident opens when errors reach `ERROR_THRESHOLD_PER_MIN`, or after `FAILED_CHECKS_TO_ALERT` failed health checks in a row. Slack gets "🚨 investigating".
+2. **Investigate.** A TrueForge session runs the runbook in [`server/src/agent/instructions.md`](server/src/agent/instructions.md): read the errors and stack traces, list the commits, read the diffs, and tie the error to one commit. Each tool call shows up live on the incident timeline.
+3. **Diagnose.** The agent calls `submit_diagnosis` with the root cause, confidence, cited evidence and the proposed fix. The dashboard and Slack show it.
+4. **Approve.** The agent calls `revert_commit`, and TrueForge pauses the turn until someone decides. A human clicks **Approve** or **Reject** on the dashboard, or in Slack if interactivity is set up. `revert_commit` also refuses to run unless PEAK recorded the approval and the SHA matches the diagnosis.
+5. **Fix.** PEAK adds a revert commit on top of the branch through the GitHub API; history is not rewritten. It refuses if a later commit touched the same files. Your CD pipeline deploys the revert.
+6. **Verify.** If the health endpoint reports a `release`/`commit`/`sha`, PEAK waits until the revert is live. Then it watches health and errors for `VERIFY_WINDOW_SEC`. The result is **Resolved** or **Not recovered**, with before/after errors/min. The Slack message is updated.
 
-- Only whitelisted actions exist. Anything else isn't a tool at all.
-- Every write tool is paused for human approval by the runtime, not by our app code.
-- The LLM never holds credentials. They live in the MCP servers.
-- The full reasoning trail is kept in TrueForge's session history.
+**Humans can always override.** Any incident can be **marked resolved** by hand, with a note ("fixed it myself", false alarm); this also stops the agent. Failed or handed-off incidents can be **re-run**. A service can be **muted** for 30m/1h/4h during deploys or maintenance: checks keep running, but no incident opens. Each service can also have a **latency threshold**, so slow responses alert before the service goes down.
 
-## Demo scenarios
+If no commit explains the errors, the agent proposes nothing and the incident goes to **Needs a human**. Rejected, unresolved and failed incidents stop PEAK from reopening one for that service for 15 minutes.
 
-| | Scenario A — code-level | Scenario B — infra-level |
-|---|---|---|
-| Cause | Bad deploy leaks DB connections | Unbounded cache growth, no deploy |
-| Signal | Pool exhausted, 500s, Sentry errors tagged with bad SHA | Memory climbing, p95 latency up, DB healthy |
-| Correct fix | `trigger_rollback` | `clear_cache` |
-| Trap | `restart_service` only *mitigates* | `trigger_rollback` — nothing to roll back |
+## Run it
 
-Details: [contracts/scenarios.md](contracts/scenarios.md).
-
-## Repo layout
-
-| Path | What | Owner |
-|---|---|---|
-| [`contracts/`](contracts/) | Shared interfaces — read these first | All |
-| [`demo-app/`](demo-app/) | Node service we break on purpose | P1 |
-| [`mcp/db`](mcp/db/), [`mcp/cloud`](mcp/cloud/), [`mcp/github`](mcp/github/) | MCP connectors (HTTP, `/mcp`) | P2 |
-| [`agent/`](agent/) | AgentSpec, instructions, eval scripts, TrueForge spike | P3 |
-| [`backend/`](backend/) | Express API over TrueForge | P4 |
-| [`dashboard/`](dashboard/) | One-page incident dashboard | P4 |
-
-## Quick start
-
-**Requires Node.js ≥ 22.14.**
+Requires Node ≥ 22.14.
 
 ```bash
-git clone <repo-url> && cd Peak
-cp .env.example .env        # fill in your keys — never commit .env
+npm install
+cp .env.example .env        # add at least one model key (TRUEFOUNDRY_API_KEY, GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY or XAI_API_KEY)
+npm run dev                 # TrueForge :8790 + Groq proxy :7310 + server :4000 + dashboard :5173
 ```
 
-### 1. Run TrueForge
+Open http://localhost:5173 and create an account (email + password, or GitHub). Accounts,
+sessions, connections and incidents are stored in Postgres at `DATABASE_URL` (e.g. Neon), in a
+`peak` schema. Leave it empty for a local PGlite database under `data/pglite`.
 
-```bash
-./scripts/start-trueforge.sh
-# = OUTBOUND_URL_ALLOWED_HOSTS='["localhost","127.0.0.1"]' npx @truefoundry/trueforge@0.2.1
-```
+Every user connects **their own** accounts under **Connections**. Nothing is shared from `.env`:
 
-- UI: http://localhost:8790 · API docs: http://localhost:8790/api/v1/docs
-- `OUTBOUND_URL_ALLOWED_HOSTS` is required. Without it TrueForge refuses to connect to MCP servers on localhost.
-- Keep the version pinned to `0.2.1`.
-
-### 2. Verify the approval gate (spike)
-
-```bash
-cd agent/spike && npm install
-npm run mcp                   # terminal A — dummy MCP server
-npm run mock-model            # terminal B — scripted model, no API key needed
-MOCK_MODEL=1 npm run spike    # terminal C — expect "✓ approval requested" → "Spike complete"
-```
-
-See [agent/spike/README.md](agent/spike/README.md) for pass criteria.
-
-### 3. Run the whole stack on mocks (no keys, no database)
-
-```bash
-./scripts/dev-mock-stack.sh                   # MCP servers (MOCK=1), report-mcp, mock model, TrueForge, setup
-cd agent && MODEL_PROVIDERS=mock node run-incident.mjs --scenario A    # or B; --decision deny
-```
-
-With real models instead: fill `OPENAI_API_KEY` / `XAI_API_KEY` in `.env`, start the MCP servers and `report-mcp`, then `cd agent && node --env-file=../.env setup.mjs && node --env-file=../.env run-incident.mjs --scenario A`.
-
-### 4. Run the components
-
-Each package gets its own README with run instructions as it's built. Local ports:
-
-| Service | Port |
+| Source | How |
 |---|---|
-| demo-app | 3000 |
-| backend | 4000 |
-| dashboard | 5173 |
-| db-mcp / cloud-mcp / github-mcp | 7101 / 7102 / 7103 |
-| report-mcp | 7104 |
-| mock-model (dev only) | 7300 |
-| TrueForge | 8790 |
+| GitHub | **Connect with GitHub**: authorize, then pick a repository you can push to and its deployed branch. Needs a GitHub OAuth App (below). Or paste a fine-grained PAT (Contents: read & write, Metadata: read). |
+| Sentry | Organization slug and a **user** auth token (`sntryu_…`) with `project:read`, `event:read`, `org:read`. Organization tokens (`sntrys_…`) can't read events. EU region: `https://de.sentry.io` |
+| Slack | Bot token (`chat:write`, bot invited to the channel) plus channel, **or** an incoming webhook URL |
 
-## Tech stack
+Then add each **service**: a name, its health URL and/or its Sentry project, and optionally a latency threshold. If the health endpoint returns JSON like `{"status":"ok","release":"<git sha>"}`, PEAK can confirm the fix actually deployed.
 
-TrueForge (agent runtime) · Node.js + `@modelcontextprotocol/sdk` (MCP servers) · Express (backend) · React (dashboard) · Postgres on Neon/Supabase · Sentry · Render · OpenAI (primary model) + Grok/xAI (fallback)
+**GitHub OAuth App** (github.com → Settings → Developer settings → OAuth Apps): callback URL `<APP_URL>/api/auth/github/callback`, then set `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`. The same app powers "Sign in with GitHub" (profile + email only) and "Connect with GitHub" (asks for `repo` so PEAK can revert commits; the token is stored encrypted per workspace).
 
-## Team
+Production: `npm run build && npm start` serves the dashboard from the server on `PORT`. Set `APP_URL` and `SERVER_URL`, and run TrueForge next to it.
 
-| Role | Name |
-|---|---|
-| P1 — Demo App & Infra | Kumar Praveen |
-| P2 — MCP Connectors | Pranjal Negi |
-| P3 — Agent Brain | Vaibhav Kumawat |
-| P4 — Backend, Dashboard & Demo | Arvind Kumar |
+### Optional
+
+- **Approve from Slack:** set `SLACK_SIGNING_SECRET` and the Slack app's Interactivity Request URL to `<public APP_URL>/api/slack/interactions`. Anyone in the channel can then approve.
+
+## Layout
+
+```
+server/src/
+  index.js              Express app, MCP endpoint, static dashboard
+  monitor.js            health + error-rate polling, incident detection
+  verify.js             post-fix deploy check and watch window
+  notify.js             Slack messages (one per incident, updated)
+  auth.js               email/password + GitHub OAuth, cookie sessions
+  store.js, db.js       Postgres (DATABASE_URL, tables in the `peak` schema); PGlite when unset
+  integrations/         GitHub (incl. revert via Git Data API), Sentry, Slack
+  agent/
+    instructions.md     the runbook the model follows
+    tools.js            MCP tools the agent calls
+    runner.js           TrueForge sessions, approval pause/resume, restart recovery
+    trueforge.js        TrueForge API client with provider fallback
+    providers.js        TrueFoundry gateway → Groq → Gemini → OpenAI → xAI
+server/model/groq-proxy.js   needed for Groq (TrueForge 0.2.1 sends fields Groq rejects)
+web/src/                React dashboard: login, connections, services, incidents
+```
+
+`npm test` runs the server tests: both approval gates, `revertCommit` against a fake GitHub, detection/mute/cooldown, auth, rate limits and crypto. CI (`.github/workflows/ci.yml`) runs them and the web build on every push.
+
+`GET /api/health` is a liveness probe; `GET /api/ready` returns 503 unless the database is writable and TrueForge + a model are reachable. Auth endpoints are rate limited (30 requests / 15 min per IP, 10 logins / 15 min per email, 10 sign-ups / hour per IP). Behind a reverse proxy set `TRUST_PROXY=1` so the per-IP limits see the real client address; without a proxy leave it 0, or clients could spoof `X-Forwarded-For`.
