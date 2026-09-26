@@ -81,7 +81,8 @@ cp .env.example .env        # fill in your keys — never commit .env
 ### 1. Run TrueForge
 
 ```bash
-OUTBOUND_URL_ALLOWED_HOSTS='["localhost","127.0.0.1"]' npx @truefoundry/trueforge@0.2.1
+./scripts/start-trueforge.sh
+# = OUTBOUND_URL_ALLOWED_HOSTS='["localhost","127.0.0.1"]' npx @truefoundry/trueforge@0.2.1
 ```
 
 - UI: http://localhost:8790 · API docs: http://localhost:8790/api/v1/docs
@@ -92,8 +93,9 @@ OUTBOUND_URL_ALLOWED_HOSTS='["localhost","127.0.0.1"]' npx @truefoundry/trueforg
 
 ```bash
 cd agent/spike && npm install
-npm run mcp                                   # terminal A
-ANTHROPIC_API_KEY=sk-ant-... npm run spike    # terminal B
+npm run mcp                   # terminal A — dummy MCP server
+npm run mock-model            # terminal B — scripted model, no API key needed
+MOCK_MODEL=1 npm run spike    # terminal C — expect "✓ approval requested" → "Spike complete"
 ```
 
 See [agent/spike/README.md](agent/spike/README.md) for pass criteria.
@@ -108,6 +110,7 @@ Each package gets its own README with run instructions as it's built. Local port
 | backend | 4000 |
 | dashboard | 5173 |
 | db-mcp / cloud-mcp / github-mcp | 7101 / 7102 / 7103 |
+| mock-model (dev only) | 7300 |
 | TrueForge | 8790 |
 
 ## Tech stack

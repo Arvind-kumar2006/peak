@@ -25,9 +25,12 @@ Goal: agree on contracts so all four can work in parallel against mocks.
 - [x] Draft `contracts/incident-report.schema.json` — agent's final output shape (owner: **P3**)
 - [x] Draft `contracts/backend-api.md` — REST endpoints for dashboard (owner: **P4**)
 - [x] TrueForge v0.2.1 verified — sessions, MCP, approval schema, JSON output, deep links ([`contracts/trueforge.md`](contracts/trueforge.md)). **Decision: GO**
-- [ ] **Live approval spike** with a real `ANTHROPIC_API_KEY` — `agent/spike` (owner: **P3**, ~10 min). Run with `allow` and `DECISION=deny`. If it fails → fallback to Claude Agent SDK + our own approval gate
+- [x] **Live approval spike** — allow → tool runs, deny → tool never runs. Verified with scripted mock model (`agent/spike`). Gate is runtime-enforced, model-independent
+- [x] Deterministic mock model (`agent/spike/mock-model.mjs`) — lets P4 build without an API key
+- [x] One-command TrueForge start: `./scripts/start-trueforge.sh`
+- [ ] Optional: one spike run with real Claude (`ANTHROPIC_API_KEY=... npm run spike`) — owner **P3**
 - [ ] **Each owner reviews their contract file** with the team → mark contracts **frozen**
-- [ ] Everyone: clone repo, copy `.env.example` → `.env`, get TrueForge running locally (see [README](README.md#quick-start))
+- [ ] Everyone: clone repo, copy `.env.example` → `.env`, run `./scripts/start-trueforge.sh` (see [README](README.md#quick-start))
 
 ### Decisions
 
@@ -36,7 +39,7 @@ Goal: agree on contracts so all four can work in parallel against mocks.
 | Agent runtime | TrueForge **pinned `@0.2.1`** (0.3.0-rc exists — don't upgrade mid-hackathon) | ✅ verified |
 | TrueForge startup | `OUTBOUND_URL_ALLOWED_HOSTS='["localhost","127.0.0.1"]'` or it blocks local MCP servers | ✅ verified |
 | MCP transport | All MCP servers = **Streamable HTTP at `/mcp`** (TrueForge has no stdio support) | ✅ verified |
-| Approval gate | Write tools listed **by name** in `require_approval_for_tools`; backend approves via `user.tool_approval` | ✅ schema / ⏳ live run |
+| Approval gate | Write tools listed **by name** in `require_approval_for_tools`; backend approves via `user.tool_approval` | ✅ verified end-to-end |
 | Structured output | AgentSpec `response_format: json_schema` using `incident-report.schema.json` | ✅ verified |
 | Scenario A (code-level) | Bad commit leaks DB connections → pool exhaustion → 500s. Fix: **rollback** | Confirm at kickoff |
 | Scenario B (infra-level) | No recent deploy; memory blowup / cache growth. Fix: **clear_cache** (or restart) | Confirm at kickoff |
@@ -45,6 +48,7 @@ Goal: agree on contracts so all four can work in parallel against mocks.
 | GitHub / Sentry tools | Our own small `github-mcp` (reads + rollback); Sentry `get_recent_errors` lives in `cloud-mcp`. No official servers — fewer auth surprises | Confirm at kickoff |
 | "Resolved" definition | Metrics stable over a **60s window**, not one sample. Symptom-only fixes → **"mitigated"** | Confirm at kickoff |
 | Dashboard updates | Poll `GET /api/incidents/:id` every 2s (no SSE) | Confirm at kickoff |
+| Dev without API key | Scripted mock model via TrueForge `custom` provider (OpenAI-compatible) | ✅ verified |
 
 ---
 
@@ -92,7 +96,7 @@ Goal: agree on contracts so all four can work in parallel against mocks.
 
 **Contracts:** [`trueforge.md`](contracts/trueforge.md), [`incident-report.schema.json`](contracts/incident-report.schema.json) · **Depends on:** P2's mock servers.
 
-- [ ] Live approval spike (Phase 0)
+- [x] Live approval spike (Phase 0)
 - [ ] Setup script that registers model provider + 3 MCP servers + the `incident-investigator` agent via the API (so anyone can recreate TrueForge state in one command)
 - [ ] AgentSpec: all MCP servers, write tools in `require_approval_for_tools`, `response_format` = report schema, disable `dynamic_sub_agents` / `ask_user_questions` for determinism
 - [ ] SKILL.md / instructions:
@@ -101,7 +105,9 @@ Goal: agree on contracts so all four can work in parallel against mocks.
   - [ ] Propose exactly one whitelisted action
   - [ ] After action: `get_metrics_window` for 60s → resolved / mitigated / not_resolved
 - [ ] Pin model id
-- [ ] Confirm exact `model.message` / tool-call event shape and document it for P4 in `trueforge.md`
+- [x] Final answer = `turn.done.state.output` (documented in `trueforge.md`)
+- [ ] Document where pending tool **name + args** live (the `source_event_id` event) for P4
+- [ ] Extend `mock-model.mjs` to replay Scenario A and B (so P4 can demo without spending tokens)
 - [ ] Eval script: run each scenario 10+ times, log accuracy
 
 **Deliverable by ~8h:** agent diagnoses Scenario A correctly against mocks and pauses on `trigger_rollback`.
@@ -131,7 +137,7 @@ Goal: agree on contracts so all four can work in parallel against mocks.
 
 | Hour | Milestone | Done? |
 |---|---|---|
-| 2 | Contracts frozen, live approval spike passed | [ ] |
+| 2 | Contracts frozen, live approval spike passed | spike ✅ · contracts ⏳ |
 | 8 | Scenario A end-to-end **with mocks**: trigger → diagnosis → approve → mock execute | [ ] |
 | 16 | Scenario A end-to-end **on real infra**, real rollback, verified recovery | [ ] |
 | 24 | Scenario B works — **FEATURE FREEZE** | [ ] |

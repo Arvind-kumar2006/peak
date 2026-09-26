@@ -6,12 +6,17 @@
 //   4. approve it via the API (what our backend's /approve will do)
 //   5. confirm the tool executed and the turn finished
 //
-// Prereqs: TrueForge running (npx @truefoundry/trueforge@0.2.1), dummy-mcp running, ANTHROPIC_API_KEY set.
-// Set SKIP_MODEL=1 to only check registration (no API key needed).
+// Prereqs: TrueForge running (npx @truefoundry/trueforge@0.2.1) and dummy-mcp running.
+// Model, pick one:
+//   ANTHROPIC_API_KEY=...  real Claude
+//   MOCK_MODEL=1           scripted model from mock-model.mjs (no key needed; run `npm run mock-model` first)
+// Set SKIP_MODEL=1 to only check registration.
 
 const TF = process.env.TRUEFORGE_URL ?? 'http://localhost:8790';
 const MCP_URL = process.env.SPIKE_MCP_URL ?? 'http://localhost:7199/mcp';
 const MODEL_ID = process.env.MODEL_ID ?? 'claude-sonnet-5';
+const MOCK_MODEL = Boolean(process.env.MOCK_MODEL);
+const MOCK_MODEL_URL = process.env.MOCK_MODEL_URL ?? 'http://localhost:7300/v1';
 const DECISION = process.env.DECISION ?? 'allow'; // or 'deny'
 
 async function api(method, path, body) {
@@ -38,6 +43,9 @@ async function waitForTurn(sessionId, turnId, stopWhen) {
   throw new Error('timed out waiting for turn');
 }
 
+step('Resetting dummy service to unhealthy');
+await fetch(MCP_URL.replace(/\/mcp$/, '/reset'), { method: 'POST' });
+
 step('Registering MCP server "spike-mcp"');
 await api('PUT', '/settings/mcp-servers', {
   manifest: { type: 'remote', name: 'spike-mcp', url: MCP_URL, description: 'Spike: health check + restart' },
@@ -49,16 +57,31 @@ if (process.env.SKIP_MODEL) {
   console.log('\nSKIP_MODEL set — registration OK, stopping before model calls.');
   process.exit(0);
 }
-if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is required');
-
-step('Registering Anthropic model provider');
-await api('PUT', '/settings/model-providers', {
-  manifest: {
-    type: 'anthropic',
-    auth: { api_key: process.env.ANTHROPIC_API_KEY },
-    models: [{ model_id: MODEL_ID, name: 'spike-model', properties: {} }],
-  },
-});
+let provider;
+if (MOCK_MODEL) {
+  step('Registering scripted mock model provider');
+  provider = 'mock';
+  await api('PUT', '/settings/model-providers', {
+    manifest: {
+      type: 'custom',
+      name: 'mock',
+      base_url: MOCK_MODEL_URL,
+      auth: { api_key: 'not-used' },
+      models: [{ model_id: 'mock-1', name: 'spike-model', properties: {} }],
+    },
+  });
+} else {
+  if (!process.env.ANTHROPIC_API_KEY) throw new Error('Set ANTHROPIC_API_KEY, or MOCK_MODEL=1');
+  step('Registering Anthropic model provider');
+  provider = 'anthropic';
+  await api('PUT', '/settings/model-providers', {
+    manifest: {
+      type: 'anthropic',
+      auth: { api_key: process.env.ANTHROPIC_API_KEY },
+      models: [{ model_id: MODEL_ID, name: 'spike-model', properties: {} }],
+    },
+  });
+}
 const models = await api('GET', '/models');
 console.log('  models:', JSON.stringify(models).slice(0, 300));
 
@@ -66,7 +89,7 @@ step('Creating session with inline agent spec');
 const session = await api('POST', '/sessions', {
   agent: {
     spec: {
-      model: { name: `anthropic/spike-model` },
+      model: { name: `${provider}/spike-model` },
       instructions:
         'You are an incident responder. First call get_health. If unhealthy, call restart_service with a reason. ' +
         'After it runs, call get_health again and report whether the service recovered.',

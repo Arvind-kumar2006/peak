@@ -223,7 +223,7 @@ Ownership and checklists: [TEAM_PLAN.md](TEAM_PLAN.md).
 
 | Hours | Milestone |
 |---|---|
-| 0–2 | **Phase 0:** repo skeleton, contracts drafted, TrueForge verified ✅. Remaining: live approval spike, contract review and freeze |
+| 0–2 | **Phase 0:** repo skeleton, contracts drafted, TrueForge + approval gate verified ✅. Remaining: team review and freeze of contracts |
 | 2–8 | Parallel build against mocks. P1 demo app + Scenario A · P2 MCP servers in mock mode · P3 AgentSpec + instructions · P4 backend + dashboard on fake data |
 | **8** | ✔ Scenario A end to end **with mocks** |
 | 8–16 | Swap mocks for real infra; real rollback; verification loop |
@@ -244,7 +244,7 @@ Ownership and checklists: [TEAM_PLAN.md](TEAM_PLAN.md).
 | Live demo failure | Reproducible scenarios with `/admin/reset`; rehearse ×2; recorded backup video |
 | Scope creep | Hard lock to 2 scenarios; feature freeze at hour 24 |
 | TrueForge is pre-1.0 (0.3.0-rc already exists) | Pin `@0.2.1`; the API shapes we rely on are documented in `contracts/trueforge.md` |
-| Live approval round-trip unverified | First task after kickoff (`agent/spike`). Fallback: Claude Agent SDK + our own approval gate (about 3–4h) |
+| Approval gate doesn't behave as documented | ✅ Retired. Verified allow/deny end to end in `agent/spike` |
 | Render rollback is slow | P1 measures it early; demo script covers the wait (walk through the evidence while it deploys) |
 | Model non-determinism | Pin the model id; disable dynamic sub-agents and ask-user questions; the eval script tracks accuracy |
 

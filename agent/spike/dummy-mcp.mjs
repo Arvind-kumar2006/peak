@@ -42,6 +42,11 @@ function buildServer() {
 
 http
   .createServer(async (req, res) => {
+    if (req.method === 'POST' && req.url === '/reset') {
+      healthy = false;
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{"reset":true}');
+      return;
+    }
     if (!req.url?.startsWith('/mcp')) {
       res.writeHead(404).end();
       return;

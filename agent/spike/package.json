@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "mcp": "node dummy-mcp.mjs",
+    "mock-model": "node mock-model.mjs",
     "spike": "node run-spike.mjs"
   },
   "dependencies": {

@@ -21,6 +21,7 @@ Shared agreements between the four workstreams. **Frozen after kickoff** — cha
 | db-mcp | 7101 |
 | cloud-mcp | 7102 |
 | github-mcp | 7103 |
+| mock-model (dev only) | 7300 |
 | TrueForge | 8790 |
 
 All MCP servers expose **Streamable HTTP at `/mcp`** (TrueForge only supports remote MCP servers — no stdio).
