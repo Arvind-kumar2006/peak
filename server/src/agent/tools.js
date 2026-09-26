@@ -1,4 +1,4 @@
-// The MCP server the agent uses (mounted on this server at /mcp/<token>, stateless
+// The MCP server the agent uses (mounted on this server at /mcp, bearer-token auth, stateless
 // Streamable HTTP). Read tools investigate one incident's service; submit_diagnosis
 // records the report; revert_commit is the only write and is gated twice: TrueForge
 // pauses it for approval, and it refuses to run unless PEAK recorded that approval.
@@ -20,11 +20,11 @@ const fail = (message) => ({ content: [{ type: 'text', text: JSON.stringify({ er
 const clip = (s, n) => (s && s.length > n ? `${s.slice(0, n)}\n… (${s.length - n} more characters)` : s);
 const minutesAgo = (m) => new Date(Date.now() - m * 60_000).toISOString();
 
-function context(incidentId) {
-  const incident = getIncident(incidentId);
+async function context(incidentId) {
+  const incident = await getIncident(incidentId);
   if (!incident) throw new Error(`Unknown incident_id ${incidentId}`);
-  const service = getService(incident.serviceId);
-  return { incident, service, ...adapters(incident.workspaceId) };
+  const service = await getService(incident.serviceId);
+  return { incident, service, ...(await adapters(incident.workspaceId)) };
 }
 
 // Wrap a handler: resolve context, log the call on the incident timeline, turn throws into tool errors.
@@ -32,13 +32,13 @@ function tool(name, label, handler) {
   return async (args) => {
     let ctx;
     try {
-      ctx = context(args.incident_id);
+      ctx = await context(args.incident_id);
       const result = await handler(ctx, args);
-      addEvent(ctx.incident.id, 'agent.tool', label(args, result), { tool: name, args });
+      await addEvent(ctx.incident.id, 'agent.tool', label(args, result), { tool: name, args });
       publish(ctx.incident.workspaceId);
       return ok(result);
     } catch (err) {
-      if (ctx) addEvent(ctx.incident.id, 'agent.tool_error', `${name} failed`, { tool: name, args, error: err.message });
+      if (ctx) await addEvent(ctx.incident.id, 'agent.tool_error', `${name} failed`, { tool: name, args, error: err.message });
       return fail(err.message);
     }
   };
@@ -62,14 +62,14 @@ function buildServer() {
   server.registerTool(
     'get_incident',
     { description: 'The incident: service, alert signal, start time, recent health/error samples and the release the service reports.', inputSchema: id, annotations: read },
-    tool('get_incident', () => 'Read the incident', ({ incident, service, github }) => ({
+    tool('get_incident', () => 'Read the incident', async ({ incident, service, github }) => ({
       id: incident.id,
       title: incident.title,
       startedAt: incident.startedAt,
       signal: incident.signal,
       service: { name: service.name, healthUrl: service.healthUrl, sentryProject: service.sentryProject, reportedRelease: service.release },
       repository: github?.describe() ?? null,
-      samples: listSamples(service.id, { since: minutesAgo(30) }).filter((_, i, a) => i % Math.ceil(a.length / 20) === 0 || i === a.length - 1),
+      samples: (await listSamples(service.id, { since: minutesAgo(30) })).filter((_, i, a) => i % Math.ceil(a.length / 20) === 0 || i === a.length - 1),
     })),
   );
 
@@ -178,7 +178,7 @@ function buildServer() {
         diagnosis.proposed_fix.sha = c.sha;
         diagnosis.proposed_fix.commit = { sha: c.sha, message: c.message.split('\n')[0], author: c.author, date: c.date, url: c.url, files: c.files.map((f) => f.filename) };
       }
-      updateIncident(ctx.incident.id, { diagnosis: { ...diagnosis, submittedAt: new Date().toISOString() } });
+      await updateIncident(ctx.incident.id, { diagnosis: { ...diagnosis, submittedAt: new Date().toISOString() } });
       return {
         ok: true,
         next:
@@ -209,7 +209,7 @@ function buildServer() {
 
       const result = await requireGithub(ctx).revertCommit(planned.sha, { reason });
       const fix = { type: 'revert_commit', targetSha: planned.sha, ...result, appliedAt: new Date().toISOString() };
-      updateIncident(incident.id, { fix });
+      await updateIncident(incident.id, { fix });
       startVerification(incident.id);
       return { ...result, next: 'Fix applied. PEAK is now verifying recovery. Reply with one sentence and stop.' };
     }),
@@ -218,7 +218,7 @@ function buildServer() {
   return server;
 }
 
-// Express handler for POST/GET/DELETE /mcp/<token>.
+// Express handler for POST/GET/DELETE /mcp (auth checked in index.js).
 export async function handleMcp(req, res) {
   const server = buildServer();
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });

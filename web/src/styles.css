@@ -178,3 +178,4 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
 .mute-menu { display: inline-flex; gap: 4px; align-items: center; }
 .load-more { display: flex; justify-content: center; padding-top: 10px; }
 .narrow { max-width: 260px; }
+.steps li.skipped { color: var(--muted); border-top-style: dashed; opacity: 0.6; }

@@ -18,19 +18,24 @@ export function verifyPassword(password, stored) {
 }
 
 // APP_SECRET if set, otherwise a random key generated on first run and kept in the database.
-const key = createHash('sha256')
-  .update(config.appSecret || kvOnce('app_secret', () => randomBytes(32).toString('base64')))
-  .digest();
+let keyPromise = null;
+const getKey = () =>
+  (keyPromise ??= (async () =>
+    createHash('sha256')
+      .update(config.appSecret || (await kvOnce('app_secret', () => randomBytes(32).toString('base64'))))
+      .digest())());
 
-export function encrypt(obj) {
+export async function encrypt(obj) {
+  const key = await getKey();
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
   const data = Buffer.concat([cipher.update(JSON.stringify(obj), 'utf8'), cipher.final()]);
   return [iv, cipher.getAuthTag(), data].map((b) => b.toString('base64')).join('.');
 }
 
-export function decrypt(text) {
+export async function decrypt(text) {
   if (!text) return {};
+  const key = await getKey();
   const [iv, tag, data] = text.split('.').map((s) => Buffer.from(s, 'base64'));
   const decipher = createDecipheriv('aes-256-gcm', key, iv);
   decipher.setAuthTag(tag);

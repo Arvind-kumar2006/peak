@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
-process.env.DB_PATH = ':memory:';
+process.env.DATABASE_URL = 'memory';
 let server, base;
 
 before(async () => {
@@ -13,7 +13,10 @@ before(async () => {
   server = app.listen(0);
   base = `http://127.0.0.1:${server.address().port}/api/auth`;
 });
-after(() => server.close());
+after(async () => {
+  server.close();
+  await (await import('../src/db.js')).db.close();
+});
 
 const post = (path, body, headers = {}) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
 
@@ -29,13 +32,13 @@ test('password hashing: verifies the right password only', async () => {
 
 test('secret encryption round-trips and detects tampering', async () => {
   const { encrypt, decrypt } = await import('../src/crypto.js');
-  const box = encrypt({ token: 'ghp_secret' });
+  const box = await encrypt({ token: 'ghp_secret' });
   assert.ok(!box.includes('ghp_secret'));
-  assert.deepEqual(decrypt(box), { token: 'ghp_secret' });
+  assert.deepEqual(await decrypt(box), { token: 'ghp_secret' });
   const [iv, tag, data] = box.split('.');
   const flipped = Buffer.from(data, 'base64');
   flipped[0] ^= 1;
-  assert.throws(() => decrypt([iv, tag, flipped.toString('base64')].join('.')));
+  await assert.rejects(decrypt([iv, tag, flipped.toString('base64')].join('.')));
 });
 
 test('signup → session cookie → me; wrong password is refused', async () => {

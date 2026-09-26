@@ -7,24 +7,22 @@ import { liveSlack } from './slack.js';
 
 export const KINDS = ['github', 'sentry', 'slack'];
 
-function rows(workspaceId) {
-  return db.prepare('SELECT * FROM integrations WHERE workspace_id = ?').all(workspaceId);
-}
+const rows = (workspaceId) => db.all('SELECT * FROM integrations WHERE workspace_id = ?', workspaceId);
 
 // What the UI may see: never the secrets.
-export function listIntegrations(workspaceId) {
-  const byKind = Object.fromEntries(rows(workspaceId).map((r) => [r.kind, r]));
+export async function listIntegrations(workspaceId) {
+  const byKind = Object.fromEntries((await rows(workspaceId)).map((r) => [r.kind, r]));
   return KINDS.map((kind) => {
     const r = byKind[kind];
     return r ? { kind, connected: true, mode: r.mode, settings: parse(r.settings), connectedAt: r.connected_at } : { kind, connected: false };
   });
 }
 
-export function adapters(workspaceId) {
+export async function adapters(workspaceId) {
   const out = { github: null, sentry: null, slack: null };
-  for (const r of rows(workspaceId)) {
+  for (const r of await rows(workspaceId)) {
     const settings = parse(r.settings);
-    const secrets = r.secrets ? decrypt(r.secrets) : {};
+    const secrets = r.secrets ? await decrypt(r.secrets) : {};
     if (r.kind === 'github') out.github = liveGithub({ ...settings, token: secrets.token });
     if (r.kind === 'sentry') out.sentry = liveSentry({ ...settings, token: secrets.token });
     if (r.kind === 'slack') out.slack = liveSlack({ ...settings, ...secrets });
@@ -32,11 +30,17 @@ export function adapters(workspaceId) {
   return out;
 }
 
-function save(workspaceId, kind, mode, settings, secrets) {
-  db.prepare(
+async function save(workspaceId, kind, mode, settings, secrets) {
+  await db.run(
     `INSERT INTO integrations (workspace_id, kind, mode, settings, secrets, connected_at) VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(workspace_id, kind) DO UPDATE SET mode = excluded.mode, settings = excluded.settings, secrets = excluded.secrets, connected_at = excluded.connected_at`,
-  ).run(workspaceId, kind, mode, json(settings), secrets ? encrypt(secrets) : null, now());
+     ON CONFLICT (workspace_id, kind) DO UPDATE SET mode = excluded.mode, settings = excluded.settings, secrets = excluded.secrets, connected_at = excluded.connected_at`,
+    workspaceId,
+    kind,
+    mode,
+    json(settings),
+    secrets ? await encrypt(secrets) : null,
+    now(),
+  );
 }
 
 const req = (v, name) => {
@@ -56,15 +60,17 @@ export async function connect(workspaceId, kind, body) {
     const token = req(body.token, 'Token');
     const repo = req(body.repo, 'Repository').replace(/^https:\/\/github.com\//, '').replace(/\.git$/, '');
     const info = await githubClient(token)('GET', `/repos/${repo}`).catch(fail);
-    if (!info.permissions?.push) fail(new Error(`The token can read ${repo} but cannot push to it; PEAK needs Contents: write to apply fixes`));
-    save(workspaceId, kind, 'live', { repo: info.full_name, branch: String(body.branch || info.default_branch) }, { token });
+    if (!info.permissions?.push) fail(new Error(`You can read ${repo} but cannot push to it; PEAK needs write access to apply fixes`));
+    const branch = String(body.branch || info.default_branch);
+    await githubClient(token)('GET', `/repos/${info.full_name}/branches/${encodeURIComponent(branch)}`).catch(() => fail(new Error(`Branch ${branch} not found in ${info.full_name}`)));
+    await save(workspaceId, kind, 'live', { repo: info.full_name, branch, via: body.via === 'oauth' ? 'oauth' : 'token', login: body.login ?? null }, { token });
   }
   if (kind === 'sentry') {
     const token = req(body.token, 'Auth token');
     const org = req(body.org, 'Organization slug');
     const url = String(body.url || 'https://sentry.io').trim();
     const projects = await liveSentry({ token, org, url }).listProjects().catch(fail);
-    save(workspaceId, kind, 'live', { org, url, projects }, { token });
+    await save(workspaceId, kind, 'live', { org, url, projects }, { token });
   }
   if (kind === 'slack') {
     const botToken = String(body.botToken ?? '').trim();
@@ -73,10 +79,10 @@ export async function connect(workspaceId, kind, body) {
     const channel = botToken ? req(body.channel, 'Channel') : String(body.channel || '(webhook channel)');
     const slack = liveSlack({ botToken, webhookUrl, channel });
     if (botToken) await slack.test().catch(fail);
-    save(workspaceId, kind, 'live', { channel }, { botToken, webhookUrl });
+    await save(workspaceId, kind, 'live', { channel }, { botToken, webhookUrl });
   }
 }
 
-export function disconnect(workspaceId, kind) {
-  db.prepare('DELETE FROM integrations WHERE workspace_id = ? AND kind = ?').run(workspaceId, kind);
+export async function disconnect(workspaceId, kind) {
+  await db.run('DELETE FROM integrations WHERE workspace_id = ? AND kind = ?', workspaceId, kind);
 }

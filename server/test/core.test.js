@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-process.env.DB_PATH = ':memory:';
+process.env.DATABASE_URL = 'memory';
 const { sameCommit } = await import('../src/health.js');
 const { buildMessage, formatDuration } = await import('../src/notify.js');
 

@@ -20,9 +20,15 @@ function stepState(inc) {
     investigating: !!inc.diagnosis,
     approval: inc.approval?.decision === 'approved',
     fix: !!inc.fix,
-    verify: s === 'resolved',
-    ...(inc.closure ? { investigating: true, approval: true, fix: true } : {}),
+    verify: s === 'resolved' && !inc.closure,
   };
+  // Closed by hand: show only what PEAK really did; the rest was skipped, and the last step
+  // says a human closed it (not that PEAK verified a fix).
+  if (inc.closure) {
+    return STEPS.map((st) =>
+      st.key === 'verify' ? { ...st, label: 'Closed by hand', state: 'done' } : { ...st, state: done[st.key] ? 'done' : 'skipped' },
+    );
+  }
   const current = { investigating: 'investigating', awaiting_approval: 'approval', fixing: 'fix', verifying: 'verify' }[s];
   const failed = { rejected: 'approval', unresolved: 'verify', failed: inc.fix ? 'verify' : inc.approval ? 'fix' : 'investigating', needs_attention: 'approval' }[s];
   return STEPS.map((st) => ({ ...st, state: done[st.key] ? 'done' : st.key === current ? 'current' : st.key === failed ? 'failed' : 'todo' }));
@@ -42,25 +48,29 @@ function Steps({ incident }) {
 }
 
 // Errors/min across the incident, with markers for detection and the fix.
-function IncidentChart({ samples, incident, threshold }) {
-  const pts = samples.filter((s) => s.errorsPerMin != null);
+// Errors/min for error incidents; response time for latency incidents (or services without Sentry).
+function IncidentChart({ samples, incident }) {
+  const useErrors = samples.some((s) => s.errorsPerMin != null);
+  const metric = useErrors ? 'errorsPerMin' : 'latencyMs';
+  const threshold = useErrors ? (incident.signal?.threshold ?? 5) : incident.signal?.latencyThresholdMs;
+  const pts = samples.filter((s) => s[metric] != null);
   if (pts.length < 2) return null;
   const W = 640;
   const H = 140;
   const t0 = new Date(pts[0].at).getTime();
   const t1 = new Date(pts.at(-1).at).getTime();
-  const max = Math.max(threshold * 1.5, ...pts.map((p) => p.errorsPerMin));
+  const max = Math.max((threshold ?? 0) * 1.5, ...pts.map((p) => p[metric]), 1);
   const x = (iso) => ((new Date(iso).getTime() - t0) / Math.max(1, t1 - t0)) * W;
   const y = (v) => H - (v / max) * (H - 12);
-  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.at).toFixed(1)},${y(p.errorsPerMin).toFixed(1)}`).join(' ');
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.at).toFixed(1)},${y(p[metric]).toFixed(1)}`).join(' ');
   const markers = [
     { at: incident.startedAt, label: 'detected', cls: 'm-bad' },
     incident.fix && { at: incident.fix.appliedAt, label: 'fix applied', cls: 'm-good' },
   ].filter((m) => m && new Date(m.at).getTime() >= t0 && new Date(m.at).getTime() <= t1 + 60_000);
   return (
-    <Card title="Errors per minute">
-      <svg viewBox={`0 0 ${W} ${H + 18}`} className="chart" preserveAspectRatio="none" role="img" aria-label="Errors per minute during the incident">
-        <line x1="0" x2={W} y1={y(threshold)} y2={y(threshold)} className="threshold" />
+    <Card title={useErrors ? 'Errors per minute' : 'Response time (ms)'}>
+      <svg viewBox={`0 0 ${W} ${H + 18}`} className="chart" preserveAspectRatio="none" role="img" aria-label={`${useErrors ? 'Errors per minute' : 'Response time'} during the incident`}>
+        {threshold != null && <line x1="0" x2={W} y1={y(threshold)} y2={y(threshold)} className="threshold" />}
         <path d={`${line} L${W},${H} L0,${H} Z`} className="area" />
         <path d={line} className="line" />
         {markers.map((m) => (
@@ -74,7 +84,7 @@ function IncidentChart({ samples, incident, threshold }) {
       </svg>
       <div className="row between muted small">
         <span>{time(pts[0].at)}</span>
-        <span>dashed line: alert threshold ({threshold}/min)</span>
+        <span>{threshold != null ? `dashed line: alert threshold (${threshold}${useErrors ? '/min' : ' ms'})` : ''}</span>
         <span>{time(pts.at(-1).at)}</span>
       </div>
     </Card>
@@ -255,7 +265,8 @@ function Verification({ incident }) {
   );
 }
 
-const RERUNNABLE = ['failed', 'needs_attention', 'unresolved', 'rejected'];
+// Not 'rejected': a human already overrode that fix.
+const RERUNNABLE = ['failed', 'needs_attention', 'unresolved'];
 
 // Human overrides: close the incident by hand, or run the investigation again.
 function IncidentActions({ incident, onDone }) {
@@ -351,7 +362,6 @@ export default function Incident() {
   const { incident, service, events, samples } = data;
   const st = STATUS[incident.status];
   const open = ['investigating', 'awaiting_approval', 'fixing', 'verifying'].includes(incident.status);
-  const threshold = incident.signal?.threshold ?? 5;
 
   return (
     <div className="page">
@@ -404,7 +414,7 @@ export default function Incident() {
           <ProposedFix incident={incident} onDone={reload} />
           <Verification incident={incident} />
           <Diagnosis d={incident.diagnosis} />
-          <IncidentChart samples={samples} incident={incident} threshold={threshold} />
+          <IncidentChart samples={samples} incident={incident} />
           {incident.agent?.summary && (
             <Card title="Agent summary">
               <p>{incident.agent.summary}</p>

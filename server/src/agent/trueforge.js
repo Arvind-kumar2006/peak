@@ -25,8 +25,10 @@ export function createClient({ baseUrl = process.env.TRUEFORGE_URL ?? 'http://lo
     }
   }
 
-  async function registerMcpServer({ name, url, description }) {
-    await api('PUT', '/settings/mcp-servers', { manifest: { type: 'remote', name, url, description } });
+  async function registerMcpServer({ name, url, description, headers }) {
+    await api('PUT', '/settings/mcp-servers', {
+      manifest: { type: 'remote', name, url, description, ...(headers ? { auth: { type: 'header', headers } } : {}) },
+    });
   }
 
   // spec: AgentSpec without `model` — the client fills it in from the provider list.

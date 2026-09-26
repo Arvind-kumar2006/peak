@@ -14,6 +14,31 @@ export function formatDuration(ms) {
 const short = (sha) => (sha ? sha.slice(0, 7) : '');
 const section = (text) => ({ type: 'section', text: { type: 'mrkdwn', text } });
 
+// Closed by a human ("Mark resolved").
+function closedByHand(incident, service, blocks) {
+  const { closure } = incident;
+  blocks.push(
+    section(`✅ *Marked resolved by ${closure.by}*\n*${service.name}*: ${incident.title}${closure.note ? `\n> ${closure.note}` : ''}`),
+    section(`Incident duration: ${formatDuration(new Date(incident.resolvedAt ?? Date.now()) - new Date(incident.startedAt))}`),
+  );
+  return { text: `✅ Incident closed: ${incident.title}` };
+}
+
+// Result of PEAK's own post-fix verification: resolved or unresolved.
+function verified(incident, service, blocks) {
+  const v = incident.verification ?? {};
+  const good = incident.status === 'resolved';
+  const lines = [
+    v.before && v.after ? `Errors: ${v.before.errorsPerMin ?? '?'}/min → ${v.after.errorsPerMin ?? '?'}/min` : null,
+    v.after?.healthy != null ? `Health: ${v.after.healthy ? '🟢 healthy' : '🔴 failing'}` : null,
+    v.deploy?.release ? `Deployment: ${v.deploy.confirmed ? 'running' : 'not confirmed,'} \`${short(v.deploy.release)}\`` : null,
+    `Incident duration: ${formatDuration(new Date(incident.resolvedAt ?? Date.now()) - new Date(incident.startedAt))}`,
+  ].filter(Boolean);
+  blocks.push(section(`${good ? '✅ *Incident resolved*' : '⚠️ *Fix applied, but the service has not recovered*'}\n*${service.name}*: ${incident.title}`), section(lines.join('\n')));
+  if (!good) blocks.push(section('A human needs to take over. PEAK has stopped acting on this incident.'));
+  return { text: `${good ? '✅ Incident resolved' : '⚠️ Fix did not resolve the incident'}: ${incident.title}` };
+}
+
 export function buildMessage(incident, service) {
   const link = `${config.appUrl}/incidents/${incident.id}`;
   const d = incident.diagnosis;
@@ -60,29 +85,12 @@ export function buildMessage(incident, service) {
       );
       break;
     case 'resolved':
-      if (incident.closure) {
-        text = `✅ Incident closed: ${incident.title}`;
-        blocks.push(
-          section(`✅ *Marked resolved by ${incident.closure.by}*\n*${service.name}*: ${incident.title}${incident.closure.note ? `\n> ${incident.closure.note}` : ''}`),
-          section(`Incident duration: ${formatDuration(new Date(incident.resolvedAt ?? Date.now()) - new Date(incident.startedAt))}`),
-        );
-        break;
-      }
-    // falls through
-    case 'unresolved': {
-      const v = incident.verification ?? {};
-      const good = incident.status === 'resolved';
-      text = `${good ? '✅ Incident resolved' : '⚠️ Fix did not resolve the incident'}: ${incident.title}`;
-      const lines = [
-        v.before && v.after ? `Errors: ${v.before.errorsPerMin ?? '?'}/min → ${v.after.errorsPerMin ?? '?'}/min` : null,
-        v.after?.healthy != null ? `Health: ${v.after.healthy ? '🟢 healthy' : '🔴 failing'}` : null,
-        v.deploy?.release ? `Deployment: ${v.deploy.confirmed ? 'running' : 'not confirmed,'} \`${short(v.deploy.release)}\`` : null,
-        `Incident duration: ${formatDuration(new Date(incident.resolvedAt ?? Date.now()) - new Date(incident.startedAt))}`,
-      ].filter(Boolean);
-      blocks.push(section(`${good ? '✅ *Incident resolved*' : '⚠️ *Fix applied, but the service has not recovered*'}\n*${service.name}*: ${incident.title}`), section(lines.join('\n')));
-      if (!good) blocks.push(section('A human needs to take over. PEAK has stopped acting on this incident.'));
+      if (incident.closure) ({ text } = closedByHand(incident, service, blocks));
+      else ({ text } = verified(incident, service, blocks));
       break;
-    }
+    case 'unresolved':
+      ({ text } = verified(incident, service, blocks));
+      break;
     case 'rejected':
       text = `✋ Fix rejected: ${incident.title}`;
       blocks.push(section(`✋ *Fix rejected by ${incident.approval?.by ?? 'a teammate'}*\n*${service.name}*: ${incident.title}${incident.approval?.reason ? `\n> ${incident.approval.reason}` : ''}`), section('No changes were made. The incident is handed to the team.'));
@@ -106,18 +114,26 @@ export function buildMessage(incident, service) {
 // Post the first message or update it. Slack failures are logged on the timeline, never thrown:
 // a Slack outage must not stop incident handling.
 export async function notify(incidentId) {
-  const incident = getIncident(incidentId);
-  const { slack } = adapters(incident.workspaceId);
+  try {
+    await post(incidentId);
+  } catch (err) {
+    console.error(`[notify] ${incidentId}: ${err.message}`);
+  }
+}
+
+async function post(incidentId) {
+  const incident = await getIncident(incidentId);
+  const { slack } = await adapters(incident.workspaceId);
   if (!slack) return;
-  const message = buildMessage(incident, getService(incident.serviceId));
+  const message = buildMessage(incident, await getService(incident.serviceId));
   try {
     if (incident.slack?.ref) {
       await slack.update(incident.slack.ref, message);
     } else {
       const ref = await slack.post(message);
-      updateIncident(incidentId, { slack: { ref, channel: slack.describe().channel } });
+      await updateIncident(incidentId, { slack: { ref, channel: slack.describe().channel } });
     }
   } catch (err) {
-    addEvent(incidentId, 'slack.error', 'Slack notification failed', { error: err.message });
+    await addEvent(incidentId, 'slack.error', 'Slack notification failed', { error: err.message }).catch(() => {});
   }
 }

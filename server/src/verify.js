@@ -15,24 +15,24 @@ export function startVerification(incidentId) {
   if (running.has(incidentId)) return;
   running.add(incidentId);
   verify(incidentId)
-    .catch((err) => {
-      addEvent(incidentId, 'verify.error', 'Verification crashed', { error: err.message });
-      finish(incidentId, 'unresolved', { error: err.message });
+    .catch(async (err) => {
+      await addEvent(incidentId, 'verify.error', 'Verification crashed', { error: err.message }).catch(() => {});
+      await finish(incidentId, 'unresolved', { error: err.message }).catch((e) => console.error('[verify]', e.message));
     })
     .finally(() => running.delete(incidentId));
 }
 
 async function verify(incidentId) {
-  let incident = transition(incidentId, ['fixing'], 'verifying') ?? getIncident(incidentId);
+  const incident = (await transition(incidentId, ['fixing'], 'verifying')) ?? (await getIncident(incidentId));
   if (incident.status !== 'verifying') return;
-  const service = getService(incident.serviceId);
-  const { sentry } = adapters(incident.workspaceId);
+  const service = await getService(incident.serviceId);
+  const { sentry } = await adapters(incident.workspaceId);
   const errorsOn = sentry && service.sentryProject;
   publish(incident.workspaceId);
   notify(incidentId);
 
   // Peak error rate between detection and the fix, for the before/after report.
-  const during = listSamples(service.id, { since: incident.startedAt }).filter((s) => s.at <= incident.fix.appliedAt);
+  const during = (await listSamples(service.id, { since: incident.startedAt })).filter((s) => s.at <= incident.fix.appliedAt);
   const before = {
     errorsPerMin: Math.max(0, ...during.map((s) => s.errorsPerMin ?? 0), incident.signal?.errorsPerMin ?? 0),
     healthy: during.length ? during.at(-1).healthy : null,
@@ -41,7 +41,7 @@ async function verify(incidentId) {
   // 1. Deployment. Only checkable if the health endpoint reports a release.
   const deploy = { release: null, confirmed: false, waitedSec: 0 };
   if (service.healthUrl && service.release) {
-    addEvent(incidentId, 'verify', 'Waiting for the revert to deploy', { revertSha: incident.fix.revertSha });
+    await addEvent(incidentId, 'verify', 'Waiting for the revert to deploy', { revertSha: incident.fix.revertSha });
     const started = Date.now();
     while (Date.now() - started < config.verify.deployTimeoutSec * 1000) {
       const h = await checkHealth(service.healthUrl);
@@ -53,12 +53,12 @@ async function verify(incidentId) {
       await sleep(POLL_MS);
     }
     deploy.waitedSec = Math.round((Date.now() - started) / 1000);
-    addEvent(incidentId, 'verify', deploy.confirmed ? `Deployed ${deploy.release.slice(0, 7)} after ${deploy.waitedSec}s` : `Revert not seen on the service after ${deploy.waitedSec}s`, deploy);
+    await addEvent(incidentId, 'verify', deploy.confirmed ? `Deployed ${deploy.release.slice(0, 7)} after ${deploy.waitedSec}s` : `Revert not seen on the service after ${deploy.waitedSec}s`, deploy);
   }
 
   // 2. Watch window.
   const windowStart = new Date().toISOString();
-  addEvent(incidentId, 'verify', `Watching health and errors for ${config.verify.windowSec}s`);
+  await addEvent(incidentId, 'verify', `Watching health and errors for ${config.verify.windowSec}s`);
   publish(incident.workspaceId);
   const checks = [];
   const end = Date.now() + config.verify.windowSec * 1000;
@@ -86,16 +86,16 @@ async function verify(incidentId) {
     !errorsOk && `errors are still at ${after.errorsPerMin}/min`,
   ].filter(Boolean);
 
-  finish(incidentId, verdict, { before, after, deploy, windowSec: config.verify.windowSec, checks, reason: reasons.join('; ') || null });
+  await finish(incidentId, verdict, { before, after, deploy, windowSec: config.verify.windowSec, checks, reason: reasons.join('; ') || null });
 }
 
-function finish(incidentId, verdict, verification) {
-  const incident = transition(incidentId, ['verifying', 'fixing'], verdict, {
+async function finish(incidentId, verdict, verification) {
+  const incident = await transition(incidentId, ['verifying', 'fixing'], verdict, {
     verification: { verdict, ...verification, finishedAt: new Date().toISOString() },
     resolvedAt: new Date().toISOString(),
   });
   if (!incident) return;
-  addEvent(incidentId, verdict === 'resolved' ? 'resolved' : 'unresolved', verdict === 'resolved' ? 'Recovery verified: incident resolved' : `Not recovered: ${verification.reason ?? verification.error}`, verification);
+  await addEvent(incidentId, verdict === 'resolved' ? 'resolved' : 'unresolved', verdict === 'resolved' ? 'Recovery verified: incident resolved' : `Not recovered: ${verification.reason ?? verification.error}`, verification);
   publish(incident.workspaceId);
   notify(incidentId);
 }

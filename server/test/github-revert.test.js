@@ -7,7 +7,7 @@ let github;
 before(async () => {
   gh = await startFakeGithub();
   process.env.GITHUB_API_URL = gh.url;
-  process.env.DB_PATH = ':memory:';
+  process.env.DATABASE_URL = 'memory';
   const { liveGithub } = await import('../src/integrations/github.js');
   github = liveGithub({ token: 't', repo: gh.repo, branch: 'main' });
 });

@@ -28,8 +28,8 @@ slackRoutes.post(
     res.status(200).send(''); // ack within 3s; the message is updated by notify()
     if (!action || !['approve', 'reject'].includes(action.action_id)) return;
 
-    const incident = getIncident(action.value);
-    const slackConnected = incident && listIntegrations(incident.workspaceId).find((i) => i.kind === 'slack')?.connected;
+    const incident = await getIncident(action.value);
+    const slackConnected = incident && (await listIntegrations(incident.workspaceId)).find((i) => i.kind === 'slack')?.connected;
     if (!slackConnected) return;
     const by = `${payload.user?.name ?? payload.user?.username ?? 'someone'} (Slack)`;
     try {

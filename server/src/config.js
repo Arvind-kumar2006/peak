@@ -9,6 +9,8 @@ export const config = {
   serverUrl: (process.env.SERVER_URL ?? `http://localhost:${num(process.env.PORT, 4000)}`).replace(/\/+$/, ''),
   dataDir: process.env.DATA_DIR ?? new URL('../../data/', import.meta.url).pathname,
   appSecret: process.env.APP_SECRET ?? '',
+  // Number of reverse proxies in front of PEAK (e.g. 1 behind nginx / a load balancer). 0 = none.
+  trustProxy: Number(process.env.TRUST_PROXY ?? 0),
 
   trueforgeUrl: (process.env.TRUEFORGE_URL ?? 'http://localhost:8790').replace(/\/+$/, ''),
 

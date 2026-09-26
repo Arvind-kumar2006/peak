@@ -40,6 +40,7 @@ export async function startFakeGithub({ repo = 'acme/api' } = {}) {
     let m;
     if (p === R) return send(200, { full_name: repo, default_branch: 'main', permissions: { push: true } });
     if (p === `${R}/git/ref/heads/main`) return send(200, { object: { sha: head } });
+    if (p === `${R}/branches/main`) return send(200, { name: 'main', commit: { sha: head } });
     if ((m = new RegExp(`^${R}/commits/(\\w+)$`).exec(p))) {
       const c = at(m[1]);
       if (!c) return send(404, { message: 'No commit found' });

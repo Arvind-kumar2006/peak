@@ -7,85 +7,99 @@ let server, url, store, db, checkService;
 const mode = { status: 200, delayMs: 0 };
 
 before(async () => {
-  Object.assign(process.env, { DB_PATH: ':memory:', FAILED_CHECKS_TO_ALERT: '2', TRUEFORGE_URL: 'http://127.0.0.1:1', MODEL_PROVIDERS: 'openai', OPENAI_API_KEY: '' });
+  Object.assign(process.env, { DATABASE_URL: 'memory', FAILED_CHECKS_TO_ALERT: '2', TRUEFORGE_URL: 'http://127.0.0.1:1', MODEL_PROVIDERS: 'openai', OPENAI_API_KEY: '' });
   server = http.createServer((req, res) => setTimeout(() => res.writeHead(mode.status, { 'content-type': 'application/json' }).end('{"status":"ok","release":"abc1234def"}'), mode.delayMs));
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   url = `http://127.0.0.1:${server.address().port}/health`;
   ({ db } = await import('../src/db.js'));
   store = await import('../src/store.js');
   ({ checkService } = await import('../src/monitor.js'));
-  db.prepare("INSERT INTO workspaces (id, name, created_at) VALUES ('ws_1', 'test', '2026-01-01')").run();
+  await db.run("INSERT INTO workspaces (id, name, created_at) VALUES ('ws_1', 'test', '2026-01-01')");
 });
-after(() => server.close());
+after(async () => {
+  server.close();
+  await db.close();
+});
 
 const fresh = (extra = {}) => store.createService('ws_1', { name: `svc${Math.random()}`, healthUrl: url, ...extra });
-const check = async (id) => checkService(store.getService(id));
-const incidents = (serviceId) => store.listIncidents('ws_1', { limit: 100 }).filter((i) => i.serviceId === serviceId);
+const check = async (id) => checkService(await store.getService(id));
+const incidents = async (serviceId) => (await store.listIncidents('ws_1', { limit: 100 })).filter((i) => i.serviceId === serviceId);
 
 test('one failed check degrades; the second opens an incident', async () => {
   mode.status = 500;
-  const s = fresh();
+  const s = await fresh();
   assert.equal(await check(s.id), 'degraded');
-  assert.equal(incidents(s.id).length, 0);
+  assert.equal((await incidents(s.id)).length, 0);
   assert.equal(await check(s.id), 'down');
-  const [inc] = incidents(s.id);
+  const [inc] = await incidents(s.id);
   assert.match(inc.title, /health check failing/);
   assert.equal(inc.signal.failedChecks, 2);
   mode.status = 200;
 });
 
 test('healthy checks record the release and reset the failure count', async () => {
-  const s = fresh();
+  const s = await fresh();
   assert.equal(await check(s.id), 'healthy');
-  assert.equal(store.getService(s.id).release, 'abc1234def');
-  assert.equal(store.getService(s.id).failedChecks, 0);
+  assert.equal((await store.getService(s.id)).release, 'abc1234def');
+  assert.equal((await store.getService(s.id)).failedChecks, 0);
 });
 
 test('slow responses over the threshold open a latency incident', async () => {
   mode.delayMs = 120;
-  const s = fresh({ latencyThresholdMs: 60 });
+  const s = await fresh({ latencyThresholdMs: 60 });
   await check(s.id);
-  assert.equal(incidents(s.id).length, 0);
+  assert.equal((await incidents(s.id)).length, 0);
   assert.equal(await check(s.id), 'degraded');
-  assert.match(incidents(s.id)[0].title, /Slow responses/);
+  assert.match((await incidents(s.id))[0].title, /Slow responses/);
   mode.delayMs = 0;
 });
 
 test('a muted service is checked but does not open incidents', async () => {
   mode.status = 503;
-  const s = fresh();
-  store.setMute(s.id, { until: new Date(Date.now() + 60_000).toISOString(), reason: 'deploy' });
+  const s = await fresh();
+  await store.setMute(s.id, { until: new Date(Date.now() + 60_000).toISOString(), reason: 'deploy' });
   await check(s.id);
   assert.equal(await check(s.id), 'down');
-  assert.equal(incidents(s.id).length, 0);
-  store.setMute(s.id, { until: null });
+  assert.equal((await incidents(s.id)).length, 0);
+  await store.setMute(s.id, { until: null });
   await check(s.id);
-  assert.equal(incidents(s.id).length, 1, 'alerts again once unmuted');
+  assert.equal((await incidents(s.id)).length, 1, 'alerts again once unmuted');
   mode.status = 200;
 });
 
 test('no new incident right after one was handed to a human', async () => {
   mode.status = 500;
-  const s = fresh();
+  const s = await fresh();
   await check(s.id);
   await check(s.id);
-  const [first] = incidents(s.id);
+  const [first] = await incidents(s.id);
   // The agent is offline in tests, so the incident fails quickly; wait for that.
-  for (let i = 0; i < 50 && store.getIncident(first.id).status === 'investigating'; i++) await new Promise((r) => setTimeout(r, 20));
-  assert.equal(store.getIncident(first.id).status, 'failed');
+  for (let i = 0; i < 50 && (await store.getIncident(first.id)).status === 'investigating'; i++) await new Promise((r) => setTimeout(r, 20));
+  assert.equal((await store.getIncident(first.id)).status, 'failed');
   await check(s.id);
   await check(s.id);
-  assert.equal(incidents(s.id).length, 1, 'cooldown holds');
+  assert.equal((await incidents(s.id)).length, 1, 'cooldown holds');
   mode.status = 200;
 });
 
-test('incident list pages by start time', () => {
-  for (let i = 0; i < 5; i++) {
-    const inc = store.createIncident({ workspaceId: 'ws_1', serviceId: fresh().id, title: `p${i}`, signal: {} });
-    db.prepare('UPDATE incidents SET started_at = ? WHERE id = ?').run(`2020-01-0${i + 1}T00:00:00.000Z`, inc.id);
+test('incident pages never skip rows, even with identical start times', async () => {
+  // Isolated workspace: 5 incidents, three of them in the same millisecond.
+  await db.run("INSERT INTO workspaces (id, name, created_at) VALUES ('ws_p', 'paging', '2026-01-01')");
+  const svc = await store.createService('ws_p', { name: 'p', healthUrl: url });
+  const times = ['2020-01-01', '2020-01-02', '2020-01-03', '2020-01-03', '2020-01-03'].map((d) => `${d}T00:00:00.000Z`);
+  const ids = [];
+  for (const [i, t] of times.entries()) {
+    const inc = await store.createIncident({ workspaceId: 'ws_p', serviceId: svc.id, title: `p${i}`, signal: {} });
+    await db.run('UPDATE incidents SET started_at = ? WHERE id = ?', t, inc.id);
+    ids.push(inc.id);
   }
-  const page1 = store.listIncidents('ws_1', { limit: 3, before: '2020-12-31' });
-  const page2 = store.listIncidents('ws_1', { limit: 3, before: page1.at(-1).startedAt });
-  assert.deepEqual(page1.map((i) => i.title), ['p4', 'p3', 'p2']);
-  assert.deepEqual(page2.map((i) => i.title), ['p1', 'p0']);
+  const seen = [];
+  let after;
+  do {
+    const page = await store.pageIncidents('ws_p', { limit: 2, after });
+    seen.push(...page.items.map((i) => i.id));
+    after = page.next;
+  } while (after);
+  assert.equal(seen.length, 5);
+  assert.deepEqual([...seen].sort(), [...ids].sort(), 'every incident exactly once');
 });

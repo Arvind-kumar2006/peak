@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { useLive } from '../hooks.js';
 import { Badge, Card, ErrorNote } from '../components/ui.jsx';
@@ -15,7 +15,7 @@ const SOURCES = {
       { key: 'token', label: 'Access token', type: 'password', placeholder: 'github_pat_…' },
     ],
     help: 'Fine-grained personal access token for this repository with Contents: read and write, and Metadata: read.',
-    summary: (s) => `${s.repo} · ${s.branch}`,
+    summary: (s) => `${s.repo} · ${s.branch}${s.login ? ` · via @${s.login}` : ''}`,
   },
   sentry: {
     title: 'Sentry',
@@ -113,6 +113,190 @@ function SourceCard({ kind, integration, onChange }) {
   );
 }
 
+// GitHub is connected per user: OAuth (pick one of your repos) or, as a fallback, a token.
+function GithubCard({ integration, onChange }) {
+  const [params, setParams] = useSearchParams();
+  const [oauth, setOauth] = useState(null); // is OAuth configured on the server
+  const [pending, setPending] = useState(null); // { login } after authorizing
+  const [repos, setRepos] = useState(null);
+  const [branches, setBranches] = useState([]);
+  const [pick, setPick] = useState({ repo: '', branch: '' });
+  const [useToken, setUseToken] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(params.get('github') === 'error' ? new Error('GitHub authorization failed or was cancelled. Try again.') : null);
+  const connected = integration?.connected;
+
+  useEffect(() => {
+    api('/auth/providers').then((p) => setOauth(p.github)).catch(() => setOauth(false));
+    api('/integrations/github/pending')
+      .then((p) => {
+        setPending(p);
+        if (!p) return;
+        return api('/integrations/github/repos').then((list) => {
+          setRepos(list);
+          if (list[0]) setPick({ repo: list[0].fullName, branch: list[0].defaultBranch });
+        });
+      })
+      .catch(setError);
+  }, []);
+
+  useEffect(() => {
+    if (!pending || !pick.repo) return;
+    api(`/integrations/github/branches?repo=${encodeURIComponent(pick.repo)}`).then(setBranches).catch(() => setBranches([]));
+  }, [pending, pick.repo]);
+
+  const clearParam = () => {
+    if (params.get('github')) {
+      params.delete('github');
+      setParams(params, { replace: true });
+    }
+  };
+  const save = async (body) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api('/integrations/github', { method: 'PUT', body });
+      setPending(null);
+      setEditing(false);
+      setUseToken(false);
+      clearParam();
+      onChange();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async () => {
+    await api('/integrations/github', { method: 'DELETE' });
+    onChange();
+  };
+
+  let body;
+  if (pending && repos) {
+    body = (
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          save({ oauth: true, ...pick });
+        }}
+      >
+        <p className="small">
+          Signed in to GitHub as <strong>@{pending.login}</strong>. Pick the repository your service deploys from.
+        </p>
+        {repos.length === 0 ? (
+          <p className="error-note">@{pending.login} has no repositories with write access.</p>
+        ) : (
+          <>
+            <label>
+              Repository
+              <select value={pick.repo} onChange={(e) => setPick({ repo: e.target.value, branch: repos.find((r) => r.fullName === e.target.value)?.defaultBranch ?? '' })}>
+                {repos.map((r) => (
+                  <option key={r.fullName} value={r.fullName}>
+                    {r.fullName}
+                    {r.private ? ' 🔒' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Deployed branch
+              <select value={pick.branch} onChange={(e) => setPick({ ...pick, branch: e.target.value })}>
+                {(branches.length ? branches : [pick.branch]).map((b) => (
+                  <option key={b}>{b}</option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
+        <ErrorNote error={error} />
+        <div className="row">
+          <button disabled={busy || !repos.length}>{busy ? 'Checking…' : 'Use this repository'}</button>
+          <a className="button ghost" href="/api/integrations/github/authorize">
+            Switch account
+          </a>
+        </div>
+      </form>
+    );
+  } else if (connected && !editing) {
+    body = (
+      <div className="row between">
+        <code>{SOURCES.github.summary(integration.settings)}</code>
+        <div className="row">
+          <button className="ghost small" onClick={() => setEditing(true)}>
+            Change
+          </button>
+          <button className="ghost small danger-text" onClick={remove}>
+            Disconnect
+          </button>
+        </div>
+      </div>
+    );
+  } else if (oauth && !useToken) {
+    body = (
+      <>
+        <a className="button" href="/api/integrations/github/authorize">
+          Connect with GitHub
+        </a>
+        <p className="muted small">
+          You'll authorize PEAK on GitHub, then choose one repository you can push to.{' '}
+          <button type="button" className="ghost small" onClick={() => setUseToken(true)}>
+            Use a personal access token instead
+          </button>
+        </p>
+        <ErrorNote error={error} />
+        {editing && (
+          <button className="ghost small" onClick={() => setEditing(false)}>
+            Cancel
+          </button>
+        )}
+      </>
+    );
+  } else {
+    body = <TokenForm kind="github" save={(form) => save(form)} busy={busy} error={error} onCancel={editing || useToken ? () => (setEditing(false), setUseToken(false)) : null} />;
+  }
+
+  return (
+    <Card title="GitHub" actions={connected ? <Badge tone="good">Connected</Badge> : <Badge>Not connected</Badge>} className="source">
+      <p className="muted small">{SOURCES.github.what}</p>
+      {oauth === false && !connected && <p className="muted small">GitHub OAuth isn't configured on this server, so connect with a personal access token.</p>}
+      {body}
+    </Card>
+  );
+}
+
+function TokenForm({ kind, save, busy, error, onCancel }) {
+  const src = SOURCES[kind];
+  const [form, setForm] = useState({});
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        save(form);
+      }}
+    >
+      {src.fields.map((f) => (
+        <label key={f.key}>
+          {f.label}
+          {f.optional && <span className="muted"> (optional)</span>}
+          <input type={f.type ?? 'text'} placeholder={f.placeholder} value={form[f.key] ?? ''} onChange={(e) => setForm({ ...form, [f.key]: e.target.value })} autoComplete="off" />
+        </label>
+      ))}
+      <p className="muted small">{src.help}</p>
+      <ErrorNote error={error} />
+      <div className="row">
+        <button disabled={busy}>{busy ? 'Checking…' : 'Connect'}</button>
+        {onCancel && (
+          <button type="button" className="ghost" onClick={onCancel}>
+            Cancel
+          </button>
+        )}
+      </div>
+    </form>
+  );
+}
+
 function ServiceForm({ initial, projects, onDone, onCancel }) {
   const [form, setForm] = useState(initial ?? { name: '', healthUrl: '', sentryProject: '', latencyThresholdMs: '' });
   const [busy, setBusy] = useState(false);
@@ -207,7 +391,8 @@ export default function Setup() {
       </div>
 
       <div className="sources">
-        {['github', 'sentry', 'slack'].map((k) => (
+        <GithubCard integration={byKind.github} onChange={reload} />
+        {['sentry', 'slack'].map((k) => (
           <SourceCard key={k} kind={k} integration={byKind[k]} onChange={reload} />
         ))}
       </div>

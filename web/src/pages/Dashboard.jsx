@@ -5,6 +5,8 @@ import { useLive, useNow } from '../hooks.js';
 import { Badge, Card, Sparkline } from '../components/ui.jsx';
 import { STATUS, SERVICE_STATUS, ago, duration, short } from '../format.js';
 
+const dedupe = (list) => [...new Map(list.map((i) => [i.id, i])).values()];
+
 const OPEN = ['investigating', 'awaiting_approval', 'fixing', 'verifying'];
 
 function overall(services, incidents) {
@@ -43,16 +45,42 @@ function SetupChecklist({ integrations, services }) {
 }
 
 // Snooze alerts during a deploy or maintenance window. Checks keep running.
+// "until 14:30" today, "until Tue 14:30" on another day.
+function untilLabel(iso) {
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} ${time}`;
+}
+
+// Snooze alerts during a deploy or maintenance window. Checks keep running.
+// The menu only closes once the server confirmed; a failure is shown, never swallowed.
 function MuteControl({ service }) {
   const [open, setOpen] = useState(false);
-  const mute = (minutes) => api(`/services/${service.id}/mute`, { method: 'POST', body: { minutes } }).finally(() => setOpen(false));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const mute = async (minutes) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/services/${service.id}/mute`, { method: 'POST', body: { minutes } });
+      setOpen(false);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const failed = error && <span className="t-error small">{muteError(error)}</span>;
   if (service.mutedUntil) {
     return (
       <span className="mute-menu">
-        <span className="muted-tag">🔕 muted until {new Date(service.mutedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-        <button className="ghost small" onClick={() => mute(0)}>
+        <span className="muted-tag" title={service.muteReason ?? ''}>
+          🔕 muted until {untilLabel(service.mutedUntil)}
+        </span>
+        <button className="ghost small" onClick={() => mute(0)} disabled={busy}>
           Unmute
         </button>
+        {failed}
       </span>
     );
   }
@@ -70,40 +98,47 @@ function MuteControl({ service }) {
         [60, '1h'],
         [240, '4h'],
       ].map(([m, label]) => (
-        <button key={m} className="secondary small" onClick={() => mute(m)}>
+        <button key={m} className="secondary small" onClick={() => mute(m)} disabled={busy}>
           {label}
         </button>
       ))}
-      <button className="ghost small" onClick={() => setOpen(false)}>
+      <button className="ghost small" onClick={() => (setOpen(false), setError(null))}>
         ✕
       </button>
+      {failed}
     </span>
   );
 }
+const muteError = (err) => `Not changed: ${err.message}`;
 
-// First page comes with the overview; older pages load on demand.
-function useOlderIncidents(first) {
+// First page comes with the overview. Its cursor is captured once, on the first click, so a
+// new incident arriving between loads can't shift it; rows are de-duplicated by id anyway.
+function useOlderIncidents(firstPageNext) {
   const [older, setOlder] = useState([]);
-  const [cursor, setCursor] = useState(undefined);
+  const [cursor, setCursor] = useState(undefined); // undefined = not started yet
   const [loading, setLoading] = useState(false);
-  const next = cursor === undefined ? (first.length >= 20 ? first.at(-1).startedAt : null) : cursor;
+  const [error, setError] = useState(null);
+  const next = cursor === undefined ? firstPageNext : cursor;
   const loadMore = async () => {
     setLoading(true);
+    setError(null);
     try {
-      const page = await api(`/incidents?limit=25&before=${encodeURIComponent(next)}`);
+      const page = await api(`/incidents?limit=25&after=${encodeURIComponent(next)}`);
       setOlder((o) => [...o, ...page.items]);
       setCursor(page.next);
+    } catch (err) {
+      setError(err);
     } finally {
       setLoading(false);
     }
   };
-  return { older, hasMore: !!next, loadMore, loading };
+  return { older, hasMore: !!next, loadMore, loading, error };
 }
 
 export default function Dashboard() {
   const { data, error } = useLive('/overview');
   const now = useNow();
-  const paging = useOlderIncidents(data?.incidents ?? []);
+  const paging = useOlderIncidents(data?.incidentsNext ?? null);
   if (error) return <div className="center error-note">{error.message}</div>;
   if (!data) return <div className="center muted">Loading…</div>;
 
@@ -210,7 +245,7 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {[...incidents, ...paging.older].map((i) => (
+              {dedupe([...incidents, ...paging.older]).map((i) => (
                 <tr key={i.id}>
                   <td>
                     <Link to={`/incidents/${i.id}`}>{i.title}</Link>
@@ -227,6 +262,7 @@ export default function Dashboard() {
             </tbody>
           </table>
         )}
+        {paging.error && <div className="error-note">Couldn't load older incidents: {paging.error.message}</div>}
         {paging.hasMore && (
           <div className="load-more">
             <button className="secondary small" onClick={paging.loadMore} disabled={paging.loading}>

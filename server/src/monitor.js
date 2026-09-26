@@ -2,7 +2,7 @@
 // Opens an incident (and starts the agent) when a service crosses a threshold.
 import { config } from './config.js';
 import { adapters } from './integrations/index.js';
-import { allServices, recordCheck, openIncidentFor, createIncident, addEvent, pruneSamples, pruneIncidents } from './store.js';
+import { allServices, recordCheck, openIncidentFor, createIncident, addEvent, pruneSamples, pruneIncidents, pruneAuth } from './store.js';
 import { db } from './db.js';
 import { checkHealth } from './health.js';
 import { publish } from './events.js';
@@ -15,7 +15,7 @@ const COOLDOWN_MIN = 15;
 const lastError = new Map();
 
 export async function checkService(service) {
-  const { sentry } = adapters(service.workspaceId);
+  const { sentry } = await adapters(service.workspaceId);
   const health = service.healthUrl ? await checkHealth(service.healthUrl) : null;
 
   let errorsPerMin = null;
@@ -38,7 +38,7 @@ export async function checkService(service) {
   const spiking = errorsPerMin != null && errorsPerMin >= config.monitor.errorThresholdPerMin;
   const status = !health && errorsPerMin == null ? 'unknown' : down ? 'down' : spiking || failedChecks > 0 || slow ? 'degraded' : 'healthy';
 
-  recordCheck(service.id, {
+  await recordCheck(service.id, {
     status,
     release: health?.release,
     failedChecks,
@@ -46,13 +46,13 @@ export async function checkService(service) {
     sample: { healthy: health?.healthy ?? null, latencyMs: health?.latencyMs ?? null, errorsPerMin, release: health?.release ?? null },
   });
 
-  if ((down || spiking || slow) && !service.mutedUntil && !openIncidentFor(service.id) && !recentlyHandedOff(service.id)) {
+  if ((down || spiking || slow) && !service.mutedUntil && !(await openIncidentFor(service.id)) && !(await recentlyHandedOff(service.id))) {
     const title = spiking
       ? `Error spike on ${service.name}: ${errorsPerMin} errors/min${down ? ', health check failing' : ''}`
       : down
         ? `${service.name} health check failing: ${health.error}`
         : `Slow responses on ${service.name}: ${health.latencyMs}ms (threshold ${service.latencyThresholdMs}ms)`;
-    const incident = createIncident({
+    const incident = await createIncident({
       workspaceId: service.workspaceId,
       serviceId: service.id,
       title,
@@ -67,7 +67,7 @@ export async function checkService(service) {
         release: health?.release ?? service.release,
       },
     });
-    addEvent(incident.id, 'detected', `Incident detected: ${title}`, incident.signal);
+    await addEvent(incident.id, 'detected', `Incident detected: ${title}`, incident.signal);
     console.log(`[monitor] incident ${incident.id} on ${service.name}: ${title}`);
     notify(incident.id);
     startInvestigation(incident.id);
@@ -75,11 +75,9 @@ export async function checkService(service) {
   return status;
 }
 
-function recentlyHandedOff(serviceId) {
+async function recentlyHandedOff(serviceId) {
   const since = new Date(Date.now() - COOLDOWN_MIN * 60_000).toISOString();
-  return !!db
-    .prepare("SELECT 1 FROM incidents WHERE service_id = ? AND status IN ('needs_attention','rejected','failed','unresolved') AND resolved_at >= ? LIMIT 1")
-    .get(serviceId, since);
+  return !!(await db.one("SELECT 1 FROM incidents WHERE service_id = ? AND status IN ('needs_attention','rejected','failed','unresolved') AND resolved_at >= ? LIMIT 1", serviceId, since));
 }
 
 let ticking = false;
@@ -87,9 +85,11 @@ async function tick() {
   if (ticking) return;
   ticking = true;
   try {
-    const services = allServices();
+    const services = await allServices();
     await Promise.allSettled(services.map(checkService));
     for (const ws of new Set(services.map((s) => s.workspaceId))) publish(ws);
+  } catch (err) {
+    console.error('[monitor] tick failed:', err.message);
   } finally {
     ticking = false;
   }
@@ -97,10 +97,8 @@ async function tick() {
 
 export function startMonitor() {
   setInterval(tick, config.monitor.intervalSec * 1000);
-  const prune = () => {
-    pruneSamples();
-    pruneIncidents(config.monitor.incidentRetentionDays);
-  };
+  const prune = () =>
+    Promise.all([pruneSamples(), pruneIncidents(config.monitor.incidentRetentionDays), pruneAuth()]).catch((err) => console.error('[monitor] prune failed:', err.message));
   setInterval(prune, 3600_000);
   prune();
   tick();
