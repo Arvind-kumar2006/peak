@@ -1,6 +1,6 @@
 // TrueForge approval spike: proves the Feature 3 gate works over HTTP.
 //
-//   1. register the dummy MCP server + Anthropic provider
+//   1. register the dummy MCP server + model provider
 //   2. start a session whose agent must call restart_service
 //   3. wait for tool.approval_required
 //   4. approve it via the API (what our backend's /approve will do)
@@ -8,15 +8,15 @@
 //
 // Prereqs: TrueForge running (npx @truefoundry/trueforge@0.2.1) and dummy-mcp running.
 // Model, pick one:
-//   ANTHROPIC_API_KEY=...  real Claude
+//   OPENAI_API_KEY=... / XAI_API_KEY=...  real model (first available in MODEL_PROVIDERS)
 //   MOCK_MODEL=1           scripted model from mock-model.mjs (no key needed; run `npm run mock-model` first)
 // Set SKIP_MODEL=1 to only check registration.
 
+import { providersFromEnv, modelRef } from '../lib/providers.mjs';
+
 const TF = process.env.TRUEFORGE_URL ?? 'http://localhost:8790';
 const MCP_URL = process.env.SPIKE_MCP_URL ?? 'http://localhost:7199/mcp';
-const MODEL_ID = process.env.MODEL_ID ?? 'claude-sonnet-5';
 const MOCK_MODEL = Boolean(process.env.MOCK_MODEL);
-const MOCK_MODEL_URL = process.env.MOCK_MODEL_URL ?? 'http://localhost:7300/v1';
 const DECISION = process.env.DECISION ?? 'allow'; // or 'deny'
 
 async function api(method, path, body) {
@@ -57,31 +57,10 @@ if (process.env.SKIP_MODEL) {
   console.log('\nSKIP_MODEL set — registration OK, stopping before model calls.');
   process.exit(0);
 }
-let provider;
-if (MOCK_MODEL) {
-  step('Registering scripted mock model provider');
-  provider = 'mock';
-  await api('PUT', '/settings/model-providers', {
-    manifest: {
-      type: 'custom',
-      name: 'mock',
-      base_url: MOCK_MODEL_URL,
-      auth: { api_key: 'not-used' },
-      models: [{ model_id: 'mock-1', name: 'spike-model', properties: {} }],
-    },
-  });
-} else {
-  if (!process.env.ANTHROPIC_API_KEY) throw new Error('Set ANTHROPIC_API_KEY, or MOCK_MODEL=1');
-  step('Registering Anthropic model provider');
-  provider = 'anthropic';
-  await api('PUT', '/settings/model-providers', {
-    manifest: {
-      type: 'anthropic',
-      auth: { api_key: process.env.ANTHROPIC_API_KEY },
-      models: [{ model_id: MODEL_ID, name: 'spike-model', properties: {} }],
-    },
-  });
-}
+if (MOCK_MODEL) process.env.MODEL_PROVIDERS = 'mock';
+const [primary] = providersFromEnv(); // OpenAI by default; see agent/lib/providers.mjs
+step(`Registering model provider: ${modelRef(primary)}`);
+await api('PUT', '/settings/model-providers', { manifest: primary.manifest });
 const models = await api('GET', '/models');
 console.log('  models:', JSON.stringify(models).slice(0, 300));
 
@@ -89,7 +68,7 @@ step('Creating session with inline agent spec');
 const session = await api('POST', '/sessions', {
   agent: {
     spec: {
-      model: { name: `${provider}/spike-model` },
+      model: { name: modelRef(primary) },
       instructions:
         'You are an incident responder. First call get_health. If unhealthy, call restart_service with a reason. ' +
         'After it runs, call get_health again and report whether the service recovered.',

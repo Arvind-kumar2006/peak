@@ -16,7 +16,8 @@ cd agent/spike && npm run mock-model       # scripted model, no key needed (port
 cd agent/spike
 MOCK_MODEL=1 npm run spike                  # full approval round-trip, no key
 DECISION=deny MOCK_MODEL=1 npm run spike    # rejection path
-ANTHROPIC_API_KEY=sk-ant-... npm run spike  # same, with real Claude
+OPENAI_API_KEY=sk-... npm run spike         # same, with real OpenAI (MODEL_PROVIDERS=xai + XAI_API_KEY for Grok)
+npm run fallback-test                       # model fallback: needs `PORT=7301 FAIL=1 npm run mock-model` + `npm run mock-model` + `npm run mcp`
 SKIP_MODEL=1 npm run spike                  # registration only
 ```
 
@@ -24,4 +25,6 @@ SKIP_MODEL=1 npm run spike                  # registration only
 
 **Pass criteria:** output shows `✓ approval requested`, terminal 2 prints `restart_service EXECUTED` only after approval, final message says the service recovered. With `DECISION=deny`, the tool must **not** execute.
 
-Optional: `MODEL_ID=<anthropic model id>` (default `claude-sonnet-5`).
+Model ids: `OPENAI_MODEL` (default `gpt-5.2`), `XAI_MODEL` (default `grok-4`) — see `agent/lib/providers.mjs`.
+
+**Fallback result (2026-09-26):** ✅ primary returned 503 → session switched to fallback → approval pause → approve → done, all on the fallback.

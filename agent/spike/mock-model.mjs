@@ -8,6 +8,8 @@
 import http from 'node:http';
 
 const PORT = Number(process.env.PORT ?? 7300);
+// FAIL=1 → every request returns 503, to simulate a provider outage (for testing fallback).
+const FAIL = Boolean(process.env.FAIL);
 
 function decide(messages) {
   const toolMsgs = messages.filter((m) => m.role === 'tool');
@@ -34,6 +36,11 @@ http
     for await (const c of req) raw += c;
     if (req.method !== 'POST' || !req.url.endsWith('/chat/completions')) {
       res.writeHead(404).end();
+      return;
+    }
+    if (FAIL) {
+      console.log('[mock-model] FAIL mode → 503');
+      res.writeHead(503, { 'content-type': 'application/json' }).end('{"error":{"message":"mock provider outage"}}');
       return;
     }
     const body = JSON.parse(raw);

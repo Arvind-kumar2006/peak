@@ -35,7 +35,7 @@ It plugs into the stack a team already has (GitHub, Sentry, Postgres, Render), f
 
 1. An incident is triggered, and the backend starts a TrueForge session.
 2. The agent investigates with read-only MCP tools: pool stats, metrics, Sentry errors, recent commits.
-3. It produces a structured report (root cause, confidence, evidence, proposed fix) that must match [`incident-report.schema.json`](contracts/incident-report.schema.json).
+3. It calls `submit_diagnosis` with a structured report (root cause, confidence, cited evidence, proposed fix) matching [`incident-report.schema.json`](contracts/incident-report.schema.json). The dashboard shows it while the action waits for approval.
 4. It calls a whitelisted write tool (`trigger_rollback`, `restart_service`, `scale_service`, `clear_cache`). **TrueForge pauses the turn.**
 5. A human clicks Approve or Reject on the dashboard, and the backend resumes the turn.
 6. On approve, the tool runs. The agent then watches the metrics for 60s and reports **resolved / mitigated / not resolved**.
@@ -100,7 +100,16 @@ MOCK_MODEL=1 npm run spike    # terminal C — expect "✓ approval requested" �
 
 See [agent/spike/README.md](agent/spike/README.md) for pass criteria.
 
-### 3. Run the components
+### 3. Run the whole stack on mocks (no keys, no database)
+
+```bash
+./scripts/dev-mock-stack.sh                   # MCP servers (MOCK=1), report-mcp, mock model, TrueForge, setup
+cd agent && MODEL_PROVIDERS=mock node run-incident.mjs --scenario A    # or B; --decision deny
+```
+
+With real models instead: fill `OPENAI_API_KEY` / `XAI_API_KEY` in `.env`, start the MCP servers and `report-mcp`, then `cd agent && node --env-file=../.env setup.mjs && node --env-file=../.env run-incident.mjs --scenario A`.
+
+### 4. Run the components
 
 Each package gets its own README with run instructions as it's built. Local ports:
 
@@ -110,12 +119,13 @@ Each package gets its own README with run instructions as it's built. Local port
 | backend | 4000 |
 | dashboard | 5173 |
 | db-mcp / cloud-mcp / github-mcp | 7101 / 7102 / 7103 |
+| report-mcp | 7104 |
 | mock-model (dev only) | 7300 |
 | TrueForge | 8790 |
 
 ## Tech stack
 
-TrueForge (agent runtime) · Node.js + `@modelcontextprotocol/sdk` (MCP servers) · Express (backend) · React (dashboard) · Postgres on Neon/Supabase · Sentry · Render · Claude (model)
+TrueForge (agent runtime) · Node.js + `@modelcontextprotocol/sdk` (MCP servers) · Express (backend) · React (dashboard) · Postgres on Neon/Supabase · Sentry · Render · OpenAI (primary model) + Grok/xAI (fallback)
 
 ## Team
 

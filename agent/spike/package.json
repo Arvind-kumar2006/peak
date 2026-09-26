@@ -5,7 +5,8 @@
   "scripts": {
     "mcp": "node dummy-mcp.mjs",
     "mock-model": "node mock-model.mjs",
-    "spike": "node run-spike.mjs"
+    "spike": "node run-spike.mjs",
+    "fallback-test": "node fallback-test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

@@ -33,6 +33,13 @@ Owner: **P1**. These drive everything else: tools (P2), SKILL.md (P3), demo scri
 
 ---
 
+## Decisions (2026-09-26)
+
+- **`main` must always be healthy.** The Scenario A bad commit (`5a824ff perf: reuse client for order lookup`) lives only on `p1/scenario-a-bad-commit` and is merged/deployed *live during the demo*. It was merged into `main` early by PR #2; the `Vaibhav` branch restores the healthy `reconcileRecentOrders`.
+- **Scenario B quiet window:** `list_recent_commits(sinceMinutes: 120)` returns no commits during Scenario B (mocks enforce it; for the live demo, nobody pushes to the deployed branch in the 2 hours before). The agent treats an empty window as evidence against a bad deploy.
+- **Rollback target** is `previousDeploy.id` from `get_service_status` (the parent of the bad commit, `1e82fab`).
+- **Mock numbers = P1's measurements** (demo-app/README.md): A → errorRate 0.30, p95 2003ms, pool 10/10 with 7 waiting; B → memory 385MB of 512MB, p95 173ms, 717 cache entries.
+
 ## Rules for both
 
 - `POST /admin/reset` restores a healthy state in < 5s (needed for rehearsals).
