@@ -154,18 +154,29 @@ and never commits, giving `db-mcp` a second independent source of evidence.
 
 - [ ] Use `agent/lib/trueforge-client.mjs` (`createSession`, `start`, `approve`, `reject`, `getReports`, `getPendingAction`) — see the sketch in `contracts/backend-api.md` and the working CLI in `agent/run-incident.mjs`
 - [ ] Develop against `./scripts/dev-mock-stack.sh` (no keys needed)
-- [ ] Express backend (port 4000):
-  - [ ] `POST /api/incidents` — inject scenario + create TrueForge session + start turn
-  - [ ] `GET /api/incidents`, `GET /api/incidents/:id` — status derived from turn events
-  - [ ] `POST /api/incidents/:id/approve` / `reject` → `user.tool_approval`
-  - [ ] `POST /api/demo/reset`, `GET /api/metrics`
-- [ ] Dashboard (one page, port 5173): incident feed, status, confidence, root cause, evidence list, pending action + Approve/Reject, live metrics chart, before/after, link to TrueForge session
-- [ ] "Simulate incident" buttons for Scenario A and B
-- [ ] **Demo script — start Day 1**, update as features land
+- [x] Express backend (port 4000):
+  - [x] `POST /api/incidents` — inject scenario + create TrueForge session + start turn
+  - [x] `GET /api/incidents`, `GET /api/incidents/:id` — status derived from turn events
+  - [x] `POST /api/incidents/:id/approve` / `reject` → `user.tool_approval`
+  - [x] `POST /api/demo/reset`, `GET /api/metrics`
+- [x] Dashboard (one page, port 5173): incident feed, status, confidence, root cause, evidence list, pending action + Approve/Reject, live metrics chart, before/after, link to TrueForge session
+- [x] "Simulate incident" buttons for Scenario A and B
+- [x] **Demo script — start Day 1**, update as features land → [`DEMO_SCRIPT.md`](DEMO_SCRIPT.md)
 - [ ] Pitch deck
 - [ ] Record backup demo video (after 24h checkpoint)
 
-**Deliverable by ~6h:** dashboard renders a fake incident end to end; Approve button hits the backend.
+**Done so far:** backend runs end to end against a scripted fake agent
+(`TRUEFORGE_MODE=fake`), so the whole approve flow is demoable before the core
+lands. 39 tests over the status state machine, report parser and event mapper.
+Dashboard verified in-browser: trigger → investigate → gate → approve → resolved.
+Switching to the real runtime is one env var.
+
+**Blocked on:** Neon `PEAK_DATABASE_URL` (memory store until then), P1's
+`ADMIN_TOKEN` and a reachable demo app (metrics fall back to labelled synthetic
+data), and P3's answer on where the pending tool call's **name + args** live
+(`mapper.js` handles several shapes and degrades gracefully meanwhile).
+
+**Deliverable by ~6h:** dashboard renders a fake incident end to end; Approve button hits the backend. ✅
 
 ---
 
