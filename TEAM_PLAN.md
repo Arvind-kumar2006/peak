@@ -7,10 +7,10 @@
 
 | Role | Name | Owns |
 |---|---|---|
-| **P1 — Demo App & Infra** | _TBD_ | Demo app, DB, Sentry, Render deploy, failure injection, rollback mechanism |
-| **P2 — MCP Connectors** | _TBD_ | `db-mcp`, `cloud-mcp`, GitHub/Sentry MCP setup, whitelisted write tools |
-| **P3 — Agent Brain** | _TBD_ | TrueForge setup (or fallback), AgentSpec, SKILL.md, verification logic, eval runs |
-| **P4 — Backend, Dashboard & Demo** | _TBD_ | Express backend, approval flow, dashboard, demo script, pitch, backup recording |
+| **P1 — Demo App & Infra** | _Kumar Praveen_ | Demo app, DB, Sentry, Render deploy, failure injection, rollback mechanism |
+| **P2 — MCP Connectors** | _Pranjal Negi_ | `db-mcp`, `cloud-mcp`, GitHub/Sentry MCP setup, whitelisted write tools |
+| **P3 — Agent Brain** | _Vaibhav Kumawat_ | TrueForge setup (or fallback), AgentSpec, SKILL.md, verification logic, eval runs |
+| **P4 — Backend, Dashboard & Demo** | _Arvind Kumar_ | Express backend, approval flow, dashboard, demo script, pitch, backup recording |
 
 ---
 
