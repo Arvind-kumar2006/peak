@@ -52,13 +52,39 @@ Every user connects **their own** accounts under **Connections**. Nothing is sha
 
 | Source | How |
 |---|---|
-| GitHub | **Connect with GitHub**: authorize, then pick a repository you can push to and its deployed branch. Needs a GitHub OAuth App (below). Or paste a fine-grained PAT (Contents: read & write, Metadata: read). |
-| Sentry | Organization slug and a **user** auth token (`sntryu_…`) with `project:read`, `event:read`, `org:read`. Organization tokens (`sntrys_…`) can't read events. EU region: `https://de.sentry.io` |
-| Slack | Bot token (`chat:write`, bot invited to the channel) plus channel, **or** an incoming webhook URL |
+| GitHub | **Connect with GitHub**: authorize in the browser, then pick a repository you can push to and its deployed branch. OAuth only — there is no token field. Needs a GitHub OAuth App (below). |
+| Slack | **Connect with Slack**: install the PEAK app on your Slack workspace, then pick the channel from the list. PEAK joins the channel itself. Needs a Slack app (below). |
+| Sentry | Organization slug and a **user** auth token (`sntryu_…`) with `project:read`, `event:read`, `org:read`. Organization tokens (`sntrys_…`) can't read events. EU region: `https://de.sentry.io`. The one source still pasted by hand, because Sentry has no install-a-bot flow. |
 
 Then add each **service**: a name, its health URL and/or its Sentry project, and optionally a latency threshold. If the health endpoint returns JSON like `{"status":"ok","release":"<git sha>"}`, PEAK can confirm the fix actually deployed.
 
 **GitHub OAuth App** (github.com → Settings → Developer settings → OAuth Apps): callback URL `<APP_URL>/api/auth/github/callback`, then set `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`. The same app powers "Sign in with GitHub" (profile + email only) and "Connect with GitHub" (asks for `repo` so PEAK can revert commits; the token is stored encrypted per workspace).
+
+**Slack app** (api.slack.com/apps → Create New App → From a manifest): paste the manifest below, create it, then set the app's **Redirect URL** to `<APP_URL>/api/auth/slack/callback` and set `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET`. Install it on your workspace from the app's page. PEAK never sees a pasted bot token — Slack mints one for the installation and hands it over in the callback, and PEAK stores it encrypted per workspace.
+
+```yaml
+display_information:
+  name: PEAK
+  description: Posts incident diagnosis and proposed fixes to your channel
+features:
+  bot_user:
+    display_name: PEAK
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - channels:read
+      - groups:read
+      - channels:join
+      - groups:join
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
+```
+
+Add `channels:history` to the scopes if you want PEAK to read replies in the incident thread. Override the whole list with `SLACK_SCOPES` in `.env`.
 
 Production: `npm run build && npm start` serves the dashboard from the server on `PORT`. Set `APP_URL` and `SERVER_URL`, and run TrueForge next to it.
 

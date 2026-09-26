@@ -20,7 +20,13 @@ export const config = {
     apiUrl: (process.env.GITHUB_API_URL ?? 'https://api.github.com').replace(/\/+$/, ''),
   },
   slack: {
+    clientId: process.env.SLACK_CLIENT_ID ?? '',
+    clientSecret: process.env.SLACK_CLIENT_SECRET ?? '',
     signingSecret: process.env.SLACK_SIGNING_SECRET ?? '',
+    apiUrl: (process.env.SLACK_API_URL ?? 'https://slack.com/api').replace(/\/+$/, ''),
+    // What "Connect with Slack" asks for: post and update incident messages, and read the
+    // channel list so the user can pick a channel instead of typing its name.
+    scopes: process.env.SLACK_SCOPES ?? 'chat:write,channels:read,groups:read,channels:join,groups:join',
   },
 
   monitor: {

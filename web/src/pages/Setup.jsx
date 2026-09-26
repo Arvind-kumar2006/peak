@@ -5,18 +5,44 @@ import { useLive } from '../hooks.js';
 import { Badge, Card, ErrorNote } from '../components/ui.jsx';
 import { SERVICE_STATUS } from '../format.js';
 
-const SOURCES = {
+// GitHub and Slack connect over OAuth: the user authorizes in the browser, PEAK receives the
+// credential, and the only thing left to pick is a target — a repository, a channel. Nothing is
+// pasted. Sentry is the exception: its API has no equivalent install flow, so it takes a token.
+const OAUTH = {
   github: {
     title: 'GitHub',
     what: 'PEAK reads recent commits and diffs, and reverts the bad commit once you approve.',
-    fields: [
-      { key: 'repo', label: 'Repository', placeholder: 'owner/repo' },
-      { key: 'branch', label: 'Deployed branch', placeholder: 'default branch', optional: true },
-      { key: 'token', label: 'Access token', type: 'password', placeholder: 'github_pat_…' },
-    ],
-    help: 'Fine-grained personal access token for this repository with Contents: read and write, and Metadata: read.',
+    connect: 'Connect with GitHub',
+    blurb: "You'll authorize PEAK on GitHub, then choose one repository you can push to.",
+    missing: 'GitHub isn’t configured on this server.',
+    fix: 'Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET, then reload.',
     summary: (s) => `${s.repo} · ${s.branch}${s.login ? ` · via @${s.login}` : ''}`,
   },
+  slack: {
+    title: 'Slack',
+    what: 'PEAK posts the incident, root cause and proposed fix, and updates the message when it resolves.',
+    connect: 'Connect with Slack',
+    blurb: "You'll install the PEAK app on your Slack workspace, then choose the channel it posts to.",
+    missing: 'Slack isn’t configured on this server.',
+    fix: 'Set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET, then reload.',
+    summary: (s) => `#${s.channelName ?? s.channel}${s.team ? ` · ${s.team}` : ''}`,
+  },
+};
+
+// Both flows land back on /setup?github=… / ?slack=…. Read the flag once, then scrub it so a
+// reload doesn't replay an error the user has already seen.
+function useLandingError(name) {
+  const [params, setParams] = useSearchParams();
+  const [failed] = useState(() => params.get(name) === 'error');
+  useEffect(() => {
+    if (!params.has(name)) return;
+    params.delete(name);
+    setParams(params, { replace: true });
+  }, []);
+  return failed ? new Error(name === 'slack' ? 'Slack installation failed or was cancelled. Try again.' : 'GitHub authorization failed or was cancelled. Try again.') : null;
+}
+
+const SOURCES = {
   sentry: {
     title: 'Sentry',
     what: 'PEAK watches the error rate, and reads issues and stack traces during an investigation.',
@@ -27,17 +53,6 @@ const SOURCES = {
     ],
     help: 'User auth token with scopes project:read, event:read and org:read (Settings → Auth Tokens). EU region: https://de.sentry.io.',
     summary: (s) => `${s.org} · ${s.projects?.length ?? 0} projects`,
-  },
-  slack: {
-    title: 'Slack',
-    what: 'PEAK posts the incident, root cause and proposed fix, and updates the message when it resolves.',
-    fields: [
-      { key: 'botToken', label: 'Bot token', type: 'password', placeholder: 'xoxb-…', optional: true },
-      { key: 'channel', label: 'Channel', placeholder: '#incidents or channel ID', optional: true },
-      { key: 'webhookUrl', label: 'Or: incoming webhook URL', type: 'password', placeholder: 'https://hooks.slack.com/services/…', optional: true },
-    ],
-    help: 'A bot token (chat:write, bot invited to the channel) lets PEAK update one message per incident. A webhook only posts new messages.',
-    summary: (s) => s.channel,
   },
 };
 
@@ -113,18 +128,62 @@ function SourceCard({ kind, integration, onChange }) {
   );
 }
 
-// GitHub is connected per user: OAuth (pick one of your repos) or, as a fallback, a token.
+// The connected state of an OAuth source: what it points at, plus Change (re-authorize, which
+// starts the browser flow again) and Disconnect.
+function Connected({ kind, integration, onChange }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  return (
+    <>
+      <div className="row between">
+        <code>{OAUTH[kind].summary(integration.settings)}</code>
+        <div className="row">
+          <a className="button ghost small" href={`/api/integrations/${kind}/authorize`}>
+            Change
+          </a>
+          <button
+            className="outline-danger small"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              setError(null);
+              try {
+                await api(`/integrations/${kind}`, { method: 'DELETE' });
+                onChange();
+              } catch (err) {
+                setError(err);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? '…' : 'Disconnect'}
+          </button>
+        </div>
+      </div>
+      <ErrorNote error={error} />
+    </>
+  );
+}
+
+// Shown when the server has no OAuth app configured for this source, so there is nothing the
+// user could usefully click. (While we are still finding out, the card shows "Loading…".)
+function NotConfigured({ kind }) {
+  return (
+    <p className="error-note">
+      {OAUTH[kind].missing} {OAUTH[kind].fix}
+    </p>
+  );
+}
+
 function GithubCard({ integration, onChange }) {
-  const [params, setParams] = useSearchParams();
   const [oauth, setOauth] = useState(null); // is OAuth configured on the server
   const [pending, setPending] = useState(null); // { login } after authorizing
   const [repos, setRepos] = useState(null);
   const [branches, setBranches] = useState([]);
   const [pick, setPick] = useState({ repo: '', branch: '' });
-  const [useToken, setUseToken] = useState(false);
-  const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(params.get('github') === 'error' ? new Error('GitHub authorization failed or was cancelled. Try again.') : null);
+  const [error, setError] = useState(useLandingError('github'));
   const connected = integration?.connected;
 
   useEffect(() => {
@@ -146,21 +205,13 @@ function GithubCard({ integration, onChange }) {
     api(`/integrations/github/branches?repo=${encodeURIComponent(pick.repo)}`).then(setBranches).catch(() => setBranches([]));
   }, [pending, pick.repo]);
 
-  const clearParam = () => {
-    if (params.get('github')) {
-      params.delete('github');
-      setParams(params, { replace: true });
-    }
-  };
-  const save = async (body) => {
+  const save = async (e) => {
+    e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await api('/integrations/github', { method: 'PUT', body });
+      await api('/integrations/github', { method: 'PUT', body: { oauth: true, ...pick } });
       setPending(null);
-      setEditing(false);
-      setUseToken(false);
-      clearParam();
       onChange();
     } catch (err) {
       setError(err);
@@ -168,20 +219,13 @@ function GithubCard({ integration, onChange }) {
       setBusy(false);
     }
   };
-  const remove = async () => {
-    await api('/integrations/github', { method: 'DELETE' });
-    onChange();
-  };
 
   let body;
-  if (pending && repos) {
+  if (connected && !pending) {
+    body = <Connected kind="github" integration={integration} onChange={onChange} />;
+  } else if (pending && repos) {
     body = (
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          save({ oauth: true, ...pick });
-        }}
-      >
+      <form onSubmit={save}>
         <p className="small">
           Signed in to GitHub as <strong>@{pending.login}</strong>. Pick the repository your service deploys from.
         </p>
@@ -219,81 +263,127 @@ function GithubCard({ integration, onChange }) {
         </div>
       </form>
     );
-  } else if (connected && !editing) {
-    body = (
-      <div className="row between">
-        <code>{SOURCES.github.summary(integration.settings)}</code>
-        <div className="row">
-          <button className="ghost small" onClick={() => setEditing(true)}>
-            Change
-          </button>
-          <button className="outline-danger small" onClick={remove}>
-            Disconnect
-          </button>
-        </div>
-      </div>
-    );
-  } else if (oauth && !useToken) {
+  } else if (oauth) {
     body = (
       <>
         <a className="button" href="/api/integrations/github/authorize">
-          Connect with GitHub
+          {OAUTH.github.connect}
         </a>
-        <p className="muted small">
-          You'll authorize PEAK on GitHub, then choose one repository you can push to.{' '}
-          <button type="button" className="ghost small" onClick={() => setUseToken(true)}>
-            Use a personal access token instead
-          </button>
-        </p>
+        <p className="muted small">{OAUTH.github.blurb}</p>
         <ErrorNote error={error} />
-        {editing && (
-          <button className="ghost small" onClick={() => setEditing(false)}>
-            Cancel
-          </button>
-        )}
       </>
     );
+  } else if (oauth === false) {
+    body = <NotConfigured kind="github" />;
   } else {
-    body = <TokenForm kind="github" save={(form) => save(form)} busy={busy} error={error} onCancel={editing || useToken ? () => (setEditing(false), setUseToken(false)) : null} />;
+    body = <p className="muted small">Loading…</p>;
   }
 
   return (
-    <Card title="GitHub" actions={connected ? <Badge tone="good">Connected</Badge> : <Badge>Not connected</Badge>} className="source">
-      <p className="muted small">{SOURCES.github.what}</p>
-      {oauth === false && !connected && <p className="muted small">GitHub OAuth isn't configured on this server, so connect with a personal access token.</p>}
+    <Card title={OAUTH.github.title} actions={connected ? <Badge tone="good">Connected</Badge> : <Badge>Not connected</Badge>} className="source">
+      <p className="muted small">{OAUTH.github.what}</p>
       {body}
     </Card>
   );
 }
 
-function TokenForm({ kind, save, busy, error, onCancel }) {
-  const src = SOURCES[kind];
-  const [form, setForm] = useState({});
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        save(form);
-      }}
-    >
-      {src.fields.map((f) => (
-        <label key={f.key}>
-          {f.label}
-          {f.optional && <span className="muted"> (optional)</span>}
-          <input type={f.type ?? 'text'} placeholder={f.placeholder} value={form[f.key] ?? ''} onChange={(e) => setForm({ ...form, [f.key]: e.target.value })} autoComplete="off" />
-        </label>
-      ))}
-      <p className="muted small">{src.help}</p>
-      <ErrorNote error={error} />
-      <div className="row">
-        <button disabled={busy}>{busy ? 'Checking…' : 'Connect'}</button>
-        {onCancel && (
-          <button type="button" className="ghost" onClick={onCancel}>
-            Cancel
-          </button>
+function SlackCard({ integration, onChange }) {
+  const [oauth, setOauth] = useState(null); // is the Slack app configured on the server
+  const [pending, setPending] = useState(null); // { team } after installing the app
+  const [channels, setChannels] = useState(null);
+  const [channel, setChannel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(useLandingError('slack'));
+  const connected = integration?.connected;
+
+  useEffect(() => {
+    api('/auth/providers').then((p) => setOauth(p.slack)).catch(() => setOauth(false));
+    api('/integrations/slack/pending')
+      .then((p) => {
+        setPending(p);
+        if (!p) return;
+        return api('/integrations/slack/channels').then((list) => {
+          setChannels(list);
+          // Prefer a channel the bot is already in — posting there is certain to work.
+          const first = list.find((c) => c.member) ?? list[0];
+          if (first) setChannel(first.id);
+        });
+      })
+      .catch(setError);
+  }, []);
+
+  const save = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api('/integrations/slack', { method: 'PUT', body: { oauth: true, channel, channelName: channels.find((c) => c.id === channel)?.name } });
+      setPending(null);
+      onChange();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  let body;
+  if (connected && !pending) {
+    body = <Connected kind="slack" integration={integration} onChange={onChange} />;
+  } else if (pending && channels) {
+    body = (
+      <form onSubmit={save}>
+        <p className="small">
+          PEAK was installed on <strong>{pending.team ?? 'your Slack workspace'}</strong>. Pick the channel it should post incidents to.
+        </p>
+        {channels.length === 0 ? (
+          <p className="error-note">
+            No channels are visible to the PEAK app. Check that its <code>channels:read</code> and <code>groups:read</code> scopes are approved, then reinstall it.
+          </p>
+        ) : (
+          <label>
+            Channel
+            <select value={channel} onChange={(e) => setChannel(e.target.value)}>
+              {channels.map((c) => (
+                <option key={c.id} value={c.id}>
+                  #{c.name}
+                  {c.private ? ' (private)' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
         )}
-      </div>
-    </form>
+        <p className="muted small">PEAK joins the channel itself, so there is nothing to invite. A private channel still needs the PEAK app added to it in Slack.</p>
+        <ErrorNote error={error} />
+        <div className="row">
+          <button disabled={busy || !channels.length}>{busy ? 'Connecting…' : 'Use this channel'}</button>
+          <a className="button ghost" href="/api/integrations/slack/authorize">
+            Switch workspace
+          </a>
+        </div>
+      </form>
+    );
+  } else if (oauth) {
+    body = (
+      <>
+        <a className="button" href="/api/integrations/slack/authorize">
+          {OAUTH.slack.connect}
+        </a>
+        <p className="muted small">{OAUTH.slack.blurb}</p>
+        <ErrorNote error={error} />
+      </>
+    );
+  } else if (oauth === false) {
+    body = <NotConfigured kind="slack" />;
+  } else {
+    body = <p className="muted small">Loading…</p>;
+  }
+
+  return (
+    <Card title={OAUTH.slack.title} actions={connected ? <Badge tone="good">Connected</Badge> : <Badge>Not connected</Badge>} className="source">
+      <p className="muted small">{OAUTH.slack.what}</p>
+      {body}
+    </Card>
   );
 }
 
@@ -393,9 +483,8 @@ export default function Setup() {
 
       <div className="sources">
         <GithubCard integration={byKind.github} onChange={reload} />
-        {['sentry', 'slack'].map((k) => (
-          <SourceCard key={k} kind={k} integration={byKind[k]} onChange={reload} />
-        ))}
+        <SlackCard integration={byKind.slack} onChange={reload} />
+        <SourceCard kind="sentry" integration={byKind.sentry} onChange={reload} />
       </div>
 
       <Card title="Services" actions={!adding && data.services.length > 0 && <button className="small" onClick={() => setAdding(true)}>Add service</button>}>

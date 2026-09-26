@@ -3,7 +3,7 @@ import { db, now, json, parse } from '../db.js';
 import { encrypt, decrypt } from '../crypto.js';
 import { liveGithub, githubClient } from './github.js';
 import { liveSentry } from './sentry.js';
-import { liveSlack } from './slack.js';
+import { joinChannel, liveSlack } from './slack.js';
 
 export const KINDS = ['github', 'sentry', 'slack'];
 
@@ -63,7 +63,7 @@ export async function connect(workspaceId, kind, body) {
     if (!info.permissions?.push) fail(new Error(`You can read ${repo} but cannot push to it; PEAK needs write access to apply fixes`));
     const branch = String(body.branch || info.default_branch);
     await githubClient(token)('GET', `/repos/${info.full_name}/branches/${encodeURIComponent(branch)}`).catch(() => fail(new Error(`Branch ${branch} not found in ${info.full_name}`)));
-    await save(workspaceId, kind, 'live', { repo: info.full_name, branch, via: body.via === 'oauth' ? 'oauth' : 'token', login: body.login ?? null }, { token });
+    await save(workspaceId, kind, 'live', { repo: info.full_name, branch, via: 'oauth', login: body.login ?? null }, { token });
   }
   if (kind === 'sentry') {
     const token = req(body.token, 'Auth token');
@@ -73,13 +73,19 @@ export async function connect(workspaceId, kind, body) {
     await save(workspaceId, kind, 'live', { org, url, projects }, { token });
   }
   if (kind === 'slack') {
-    const botToken = String(body.botToken ?? '').trim();
-    const webhookUrl = String(body.webhookUrl ?? '').trim();
-    if (!botToken && !webhookUrl) fail(new Error('Provide a bot token or an incoming webhook URL'));
-    const channel = botToken ? req(body.channel, 'Channel') : String(body.channel || '(webhook channel)');
-    const slack = liveSlack({ botToken, webhookUrl, channel });
-    if (botToken) await slack.test().catch(fail);
-    await save(workspaceId, kind, 'live', { channel }, { botToken, webhookUrl });
+    // The token came from the OAuth callback; the channel is picked from the list that token
+    // can see. Nothing here is typed in by hand.
+    const botToken = req(body.botToken, 'Slack authorization');
+    const channel = req(body.channel, 'Channel');
+    await liveSlack({ botToken, channel }).test().catch(fail);
+    // A bot can only post where it is a member. Public channels are joined on the spot; a
+    // private one has to have the app added to it in Slack first.
+    await joinChannel(botToken, channel).catch((err) =>
+      fail(new Error(err.slackError === 'channel_not_found' || err.slackError === 'method_not_supported_for_channel_type' || err.slackError === 'is_archived'
+        ? `PEAK's bot can't join #${channel}. For a private channel, add the PEAK app to it in Slack first, or pick a public one.`
+        : `PEAK's bot can't join #${channel}: ${err.message}`)),
+    );
+    await save(workspaceId, kind, 'live', { channel, channelName: body.channelName ?? null, team: body.team ?? null, teamId: body.teamId ?? null, via: 'oauth' }, { botToken });
   }
 }
 

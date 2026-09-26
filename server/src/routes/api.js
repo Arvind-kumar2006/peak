@@ -1,7 +1,8 @@
 // Dashboard API (all routes require a signed-in user; data is scoped to their workspace).
 import { Router } from 'express';
-import { requireUser, githubAuthorizeUrl, githubOAuthEnabled } from '../auth.js';
+import { requireUser, githubAuthorizeUrl, githubOAuthEnabled, slackAuthorizeUrl } from '../auth.js';
 import { githubClient } from '../integrations/github.js';
+import { joinChannel, listChannels, slackOAuthEnabled } from '../integrations/slack.js';
 import { kvGet, kvDelete } from '../db.js';
 import { decrypt } from '../crypto.js';
 import { listIntegrations, connect, disconnect } from '../integrations/index.js';
@@ -126,18 +127,52 @@ api.get('/integrations/github/branches', async (req, res) => {
   res.json(branches.map((b) => b.name));
 });
 
+// ——— Connect Slack (OAuth) ———
+// The same three steps, with a channel to pick instead of a repository. The app's Redirect
+// URL must be <APP_URL>/api/auth/slack/callback; the callback is handled in auth.js.
+
+const slackPendingKey = (ws) => `slack_pending:${ws}`;
+async function pendingSlack(workspaceId) {
+  const raw = await kvGet(slackPendingKey(workspaceId));
+  if (!raw) return null;
+  const p = await decrypt(raw);
+  return p.expiresAt > Date.now() ? p : null;
+}
+
+api.get('/integrations/slack/authorize', async (req, res) => {
+  if (!slackOAuthEnabled()) throw bad('Slack is not configured on this server (SLACK_CLIENT_ID / SLACK_CLIENT_SECRET)', 404);
+  res.redirect(await slackAuthorizeUrl({ workspaceId: req.workspaceId }));
+});
+
+api.get('/integrations/slack/pending', async (req, res) => {
+  const p = await pendingSlack(req.workspaceId);
+  res.json(p ? { team: p.team, teamId: p.teamId } : null);
+});
+
+api.get('/integrations/slack/channels', async (req, res) => {
+  const p = await pendingSlack(req.workspaceId);
+  if (!p) throw bad('Slack authorization expired. Connect again.', 409);
+  const channels = await listChannels(p.token).catch((err) => {
+    throw bad(err.slackError === 'missing_scope' ? 'The Slack app is missing channels:read / groups:read. Update its scopes and reinstall it.' : err.message);
+  });
+  res.json(channels);
+});
+
 api.put('/integrations/:kind', async (req, res) => {
+  const kind = req.params.kind;
   const body = { ...(req.body ?? {}) };
-  if (req.params.kind === 'github' && body.oauth) {
-    const p = await pendingGithub(req.workspaceId);
-    if (!p) throw bad('GitHub authorization expired. Connect again.', 409);
-    Object.assign(body, { token: p.token, via: 'oauth', login: p.login });
-  } else if (req.params.kind === 'github') {
-    body.via = 'token';
-    delete body.login;
+  // GitHub and Slack connect over OAuth only: the credential always comes from the pending
+  // store the callback filled in, never from the request body, so there is nothing to paste.
+  if (kind === 'github' || kind === 'slack') {
+    const name = kind === 'github' ? 'GitHub' : 'Slack';
+    if (!body.oauth) throw bad(`${name} can only be connected by authorizing it in the browser`, 400);
+    const p = kind === 'github' ? await pendingGithub(req.workspaceId) : await pendingSlack(req.workspaceId);
+    if (!p) throw bad(`${name} authorization expired. Connect again.`, 409);
+    Object.assign(body, kind === 'github' ? { token: p.token, via: 'oauth', login: p.login } : { botToken: p.token, team: p.team, teamId: p.teamId, botUserId: p.botUserId });
   }
-  await connect(req.workspaceId, req.params.kind, body);
-  if (req.params.kind === 'github') await kvDelete(pendingKey(req.workspaceId));
+  await connect(req.workspaceId, kind, body);
+  if (kind === 'github') await kvDelete(pendingKey(req.workspaceId));
+  if (kind === 'slack') await kvDelete(slackPendingKey(req.workspaceId));
   publish(req.workspaceId);
   res.json(await listIntegrations(req.workspaceId));
 });
