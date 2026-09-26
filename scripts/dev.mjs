@@ -27,7 +27,7 @@ const procs = [
     args: ['-y', '@truefoundry/trueforge@0.2.1', '--port', new URL(trueforgeUrl).port || '8790'],
     env: { OUTBOUND_URL_ALLOWED_HOSTS: '["localhost","127.0.0.1"]' },
   },
-  providers.includes('groq') && env.GROQ_API_KEY && !groqProxyUp && { name: 'groq-proxy', color: 33, cmd: 'node', args: ['server/model/groq-proxy.js'] },
+  providers.includes('groq') && env.GROQ_API_KEY && !groqProxyUp && { name: 'groq-proxy', color: 33, cmd: 'node', args: ['server/model/groq-proxy.js'], env: { GROQ_PROXY_PORT: new URL(env.GROQ_BASE_URL ?? 'http://localhost:7310/v1').port || '7310' } },
   { name: 'server', color: 32, cmd: 'npm', args: ['run', 'dev', '-w', 'server'] },
   { name: 'web', color: 36, cmd: 'npm', args: ['run', 'dev', '-w', 'web'] },
 ].filter(Boolean);

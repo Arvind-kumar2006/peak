@@ -18,7 +18,8 @@
 //   node model/groq-proxy.js          then GROQ_BASE_URL=http://localhost:7310/v1
 import http from 'node:http';
 
-const PORT = Number(process.env.PORT ?? 7310);
+// Own variable: PEAK's PORT (the server) is in the same .env.
+const PORT = Number(process.env.GROQ_PROXY_PORT ?? 7310);
 const MAX_WAIT_MS = Number(process.env.GROQ_MAX_WAIT_MS ?? 90_000);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const UPSTREAM = (process.env.GROQ_UPSTREAM_URL ?? 'https://api.groq.com/openai/v1').replace(/\/+$/, '');
