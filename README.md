@@ -4,7 +4,7 @@ PEAK closes the loop on production incidents: **detect → investigate → diagn
 
 It plugs into the stack a team already has (GitHub, Sentry, Postgres, Render), finds the root cause with cited evidence, proposes a single whitelisted fix, waits for a human to click **Approve**, then checks that the service actually recovered.
 
-> Hackathon project. See [TEAM_PLAN.md](TEAM_PLAN.md) for who owns what and [contracts/](contracts/) for the interfaces between components.
+> Hackathon project. See [PRD.md](PRD.md) for the product spec, [TEAM_PLAN.md](TEAM_PLAN.md) for who owns what, and [contracts/](contracts/) for the interfaces between components.
 
 ## How it works
 
