@@ -22,6 +22,7 @@ import { logger } from '../logger.js';
 import { TrueforgeError } from './adapter.js';
 import { extractDiagnosis, extractResolution } from '../domain/report.js';
 import { pendingActionFrom } from './mapper.js';
+import { pausedFrom, turnDoneFrom, turnStatusFrom } from './turns.js';
 
 export function createRealAdapter() {
   const providers = providersFromEnv();
@@ -33,35 +34,6 @@ export function createRealAdapter() {
 
   /** sessionId -> { paused, eventCount } so we only re-derive when events move. */
   const cache = new Map();
-
-  /**
-   * Reconstruct the handle needed to approve, from the event log alone.
-   *
-   * P3's client returns `paused` from `tf.start()`. Holding that in memory
-   * would mean a backend restart mid-incident could never approve it, and
-   * `tool.approval_required` carries everything needed: thread id and the
-   * pending tool call ids.
-   */
-  function pausedFrom(events) {
-    const gate = [...events].reverse().find((e) => e?.type === 'tool.approval_required');
-    if (!gate) return null;
-    return {
-      kind: 'approval',
-      turnId: gate.turn_id ?? null,
-      threadId: gate.thread_id ?? null,
-      toolCalls: gate.tool_calls ?? [],
-    };
-  }
-
-  /** True once the session's last turn has reported turn.done. */
-  function turnDoneFrom(events) {
-    return events.some((e) => e?.type === 'turn.done');
-  }
-
-  function turnStatusFrom(events) {
-    const done = [...events].reverse().find((e) => e?.type === 'turn.done');
-    return done?.state?.status ?? null;
-  }
 
   /**
    * The read path. One event fetch, then derived state.

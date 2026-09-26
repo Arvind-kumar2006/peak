@@ -1,12 +1,10 @@
-// Diagnosis and Resolution panels.
+// Diagnosis, evidence and outcome panels.
 //
-// The schema is two-phase, and the UI follows it: a Diagnosis exists from the
-// moment the agent proposes a fix (so it can sit next to the Approve button),
-// and a Resolution arrives at the end carrying the verdict. The contract is
-// explicit at contracts/backend-api.md, and the field that earns this project's
-// credibility is `ruledOut` — what the agent considered and threw away. It gets
-// its own block rather than being buried, because "here is what I ruled out" is
-// the answer to "how do I know this isn't a guess".
+// The schema is two-phase and the UI follows it: a Diagnosis exists from the
+// moment the agent proposes a fix (it sits beside the Approve button), and a
+// Resolution arrives at the end carrying the verdict. The field that earns this
+// project's credibility is `ruledOut` — what the agent considered and threw
+// away — so it always gets its own block.
 
 import { CategoryBadge, ConfidenceBar } from './StatusBadge.jsx';
 
@@ -14,39 +12,37 @@ export function DiagnosisCard({ diagnosis }) {
   if (!diagnosis) return null;
   const { rootCause, proposedFix } = diagnosis;
 
+  // No summary line here: the page headline already is the summary.
   return (
     <section className="card">
       <header className="card-head">
         <h2>Diagnosis</h2>
         <CategoryBadge category={rootCause.category} />
       </header>
-
-      {diagnosis.summary && <p className="summary">{diagnosis.summary}</p>}
-
-      <div className="rootcause">
-        <Row label="Cause">{rootCause.description || <em className="muted">not stated</em>}</Row>
-        <Row label="Confidence">
+      <dl className="kv kv-wide">
+        <dt>Cause</dt>
+        <dd>{rootCause.description || <em className="muted">not stated</em>}</dd>
+        <dt>Confidence</dt>
+        <dd>
           <ConfidenceBar value={rootCause.confidence} />
-        </Row>
+        </dd>
         {rootCause.commitSha && (
-          <Row label="Commit">
-            <code className="sha">{rootCause.commitSha}</code>
-          </Row>
+          <>
+            <dt>Commit</dt>
+            <dd className="sha">{rootCause.commitSha}</dd>
+          </>
         )}
-        {proposedFix.reasoning && <Row label="Why this fix">{proposedFix.reasoning}</Row>}
-        {proposedFix.expectedOutcome && (
-          <Row label="Expected">
-            <span className={`pill ${proposedFix.expectedOutcome === 'resolves' ? 'tone-good' : 'tone-warn'}`}>
-              {proposedFix.expectedOutcome === 'resolves' ? 'should resolve' : 'should only mitigate'}
-            </span>
-          </Row>
+        {proposedFix?.reasoning && (
+          <>
+            <dt>Why this fix</dt>
+            <dd>{proposedFix.reasoning}</dd>
+          </>
         )}
-      </div>
-
+      </dl>
       {diagnosis.ruledOut?.length > 0 && (
-        <div className="ruledout">
-          <h3>Ruled out</h3>
-          <ul>
+        <div className="divider-dashed">
+          <span className="eyebrow">Ruled out</span>
+          <ul className="ruledout">
             {diagnosis.ruledOut.map((item, i) => (
               <li key={i}>{item}</li>
             ))}
@@ -57,66 +53,22 @@ export function DiagnosisCard({ diagnosis }) {
   );
 }
 
-export function ResolutionCard({ resolution }) {
-  if (!resolution) return null;
-  const { before = {}, after = {} } = resolution;
-
-  return (
-    <section className="card card-resolution">
-      <header className="card-head">
-        <h2>Resolution</h2>
-        <span
-          className={`pill ${
-            resolution.verdict === 'resolved'
-              ? 'tone-good'
-              : resolution.verdict === 'mitigated'
-                ? 'tone-warn'
-                : 'tone-bad'
-          }`}
-        >
-          {resolution.verdict ?? 'unknown'}
-        </span>
-      </header>
-
-      <div className="rootcause">
-        <Row label="Action">
-          <code className="sha">{resolution.actionTaken ?? 'none'}</code>
-        </Row>
-        <Row label="Window">{resolution.windowSec ? `${resolution.windowSec}s observed` : <em className="muted">not stated</em>}</Row>
-        {Object.keys(after).length > 0 && (
-          <Row label="Measured">
-            <span className="measured">
-              {Object.entries(before).map(([k, v]) => (
-                <span key={`b-${k}`} className="chip">
-                  {k} <s>{fmt(v)}</s> → <strong>{fmt(after[k])}</strong>
-                </span>
-              ))}
-            </span>
-          </Row>
-        )}
-        {resolution.reasoning && <Row label="Verdict">{resolution.reasoning}</Row>}
-        {resolution.followUp && <Row label="Follow-up">{resolution.followUp}</Row>}
-      </div>
-    </section>
-  );
-}
-
 export function EvidenceList({ evidence }) {
   if (!evidence?.length) return null;
   return (
     <section className="card">
       <header className="card-head">
         <h2>Evidence</h2>
-        <span className="muted small">{evidence.length} cited</span>
+        <span className="muted small">{evidence.length} cited, each from a tool call</span>
       </header>
       <ol className="evidence">
         {evidence.map((item, i) => (
           <li key={i}>
-            <div className="evidence-claim">{item.claim}</div>
-            <div className="evidence-meta">
-              <code className="tool">{item.tool}</code>
-              <span className="observation">{item.observation}</span>
-            </div>
+            <span className="evidence-claim">{item.claim}</span>
+            <span className="evidence-meta">
+              <span className="tool">{item.tool}</span>
+              {item.observation}
+            </span>
           </li>
         ))}
       </ol>
@@ -124,17 +76,69 @@ export function EvidenceList({ evidence }) {
   );
 }
 
-function Row({ label, children }) {
+const VERDICT = {
+  resolved: { tone: 'good', title: 'Outcome · measured, not claimed' },
+  mitigated: { tone: 'warn', title: 'Why this is not “resolved”' },
+  not_resolved: { tone: 'bad', title: 'The service did not recover' },
+  rejected: { tone: 'neutral', title: 'Action rejected — nothing was run' },
+};
+
+// before/after keys the agent reports (agent/report-schema.mjs metricsSummary).
+const TILES = [
+  { key: 'errorRate', label: 'Error rate', fmt: (v) => `${(v * 100).toFixed(1)}%` },
+  { key: 'p95Ms', label: 'p95 latency', fmt: (v) => `${Math.round(v)}ms` },
+  { key: 'poolInUse', label: 'DB clients in use', fmt: (v) => String(Math.round(v)) },
+  { key: 'memoryMB', label: 'Memory', fmt: (v) => `${Math.round(v)}MB` },
+  { key: 'release', label: 'Running release', fmt: (v) => String(v) },
+];
+
+/** The agent's Resolution, shown first once it exists. */
+export function OutcomeCard({ resolution }) {
+  if (!resolution) return null;
+  const v = VERDICT[resolution.verdict] ?? { tone: 'neutral', title: 'Outcome' };
+  const before = resolution.before ?? {};
+  const after = resolution.after ?? {};
+  const showTiles = resolution.verdict !== 'rejected';
+  // Unchanged values stay: for "mitigated" and "not resolved", the metric that did
+  // NOT move is the evidence. Resolved keeps only what changed, to stay readable.
+  const tiles = TILES.filter(
+    (t) => before[t.key] != null && after[t.key] != null && (resolution.verdict !== 'resolved' || before[t.key] !== after[t.key]),
+  );
+
   return (
-    <div className="rootcause-line">
-      <span className="label">{label}</span>
-      <span className="value">{children}</span>
-    </div>
+    <section className={`outcome outcome-${v.tone}`} aria-label="Outcome">
+      <div className="outcome-head">
+        <span className="eyebrow">{v.title}</span>
+        {showTiles && resolution.windowSec > 0 && (
+          <span className="muted small">before = during the incident · after = end of the {resolution.windowSec}s window</span>
+        )}
+      </div>
+      {resolution.reasoning && <p className="prose">{resolution.reasoning}</p>}
+      {showTiles && tiles.length > 0 && (
+        <div className="tiles">
+          {tiles.map((t) => (
+            <div className="tile" key={t.key}>
+              <span className="tile-label">{t.label}</span>
+              <span className="tile-before">{t.fmt(before[t.key])}</span>
+              <span className={`tile-after tone-${improved(t.key, before[t.key], after[t.key]) ? 'good' : v.tone === 'good' ? 'good' : 'bad'}`}>
+                {t.fmt(after[t.key])}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {resolution.followUp && (
+        <div className="callout">
+          <span className="eyebrow">Follow-up</span>
+          <span>{resolution.followUp}</span>
+        </div>
+      )}
+    </section>
   );
 }
 
-/** Show small fractions as percentages; everything else verbatim. */
-function fmt(v) {
-  if (typeof v !== 'number') return String(v ?? '—');
-  return v > 0 && v < 1 && !Number.isInteger(v) ? `${(v * 100).toFixed(1)}%` : String(Math.round(v * 100) / 100);
+/** Lower is better for every numeric metric we show; a changed release means the rollback landed. */
+function improved(key, before, after) {
+  if (key === 'release') return before !== after;
+  return Number.isFinite(before) && Number.isFinite(after) && after < before;
 }

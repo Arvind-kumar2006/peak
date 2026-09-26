@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import http from 'node:http';
-import { getState, resetState } from './mockState.js';
+import { getState, resetState, metricsAt } from './mockState.js';
 
 export function createMcpServer(name, version = '0.1.0') {
   return new McpServer({ name, version });
@@ -20,6 +20,12 @@ export function createHttpServer(name, port, buildServer) {
     if (req.url === '/mock/state' && mockMode()) {
       const state = req.method === 'POST' ? resetState((await readJson(req))?.scenario) : getState();
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(state));
+      return;
+    }
+    // The mock world's current /metrics payload (contracts/demo-app-api.md), so the
+    // dashboard can chart the simulated incident the same way it charts the real app.
+    if (req.url === '/mock/metrics' && mockMode()) {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(metricsAt(getState())));
       return;
     }
     if (!req.url?.startsWith('/mcp')) {

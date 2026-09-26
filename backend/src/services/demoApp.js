@@ -30,6 +30,27 @@ async function call(method, path, { admin = false, timeoutMs } = {}) {
   return body;
 }
 
+// Scenario names the dashboard uses → the MCP mock world's scenarios (mcp/_shared/mockState.js).
+const MOCK_SCENARIOS = { 'conn-leak': 'A', 'mem-leak': 'B' };
+
+/**
+ * The MCP servers' shared mock world (MOCK=1), used when P1's app isn't running.
+ * Without this, Simulate injected into a demo app that wasn't there, the agent
+ * investigated whatever state the mock world was left in, and the chart drew
+ * random healthy numbers instead of the incident.
+ */
+async function mockWorld(method, path, body) {
+  if (!config.mockWorld.url) return null;
+  const res = await fetch(`${config.mockWorld.url}${path}`, {
+    method,
+    headers: body ? { 'content-type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(2000),
+  });
+  if (!res.ok) throw new Error(`mock world ${method} ${path} → ${res.status}`);
+  return res.json();
+}
+
 export function createDemoApp() {
   let reachable = null; // cached reachability so the chart stops hammering a dead host
   let lastReachableAt = 0;
@@ -48,6 +69,16 @@ export function createDemoApp() {
 
   return {
     async inject(scenario) {
+      if (!(await isReachable()) && config.mockWorld.url) {
+        try {
+          const result = await mockWorld('POST', '/mock/state', { scenario: MOCK_SCENARIOS[scenario] ?? scenario });
+          logger.info('scenario injected into the MCP mock world', { scenario, result });
+          return { ok: true, result, target: 'mock' };
+        } catch (err) {
+          logger.error('mock world inject failed (continuing anyway)', { scenario, err: err.message });
+          return { ok: false, error: err.message };
+        }
+      }
       try {
         const result = await call('POST', `/admin/inject/${scenario}`, { admin: true });
         logger.info('scenario injected', { scenario, result });
@@ -62,6 +93,11 @@ export function createDemoApp() {
     },
 
     async reset() {
+      if (!(await isReachable()) && config.mockWorld.url) {
+        const result = await mockWorld('POST', '/mock/state', { scenario: 'healthy' });
+        logger.info('mock world reset', { result });
+        return result;
+      }
       const result = await call('POST', '/admin/reset', { admin: true });
       logger.info('demo app reset', { result });
       return result;
@@ -84,6 +120,13 @@ export function createDemoApp() {
           return { ...real, source: 'demo-app' };
         } catch (err) {
           logger.warn('metrics read failed, synthesising', { err: err.message });
+        }
+      }
+      if (config.mockWorld.url) {
+        try {
+          return { ...(await mockWorld('GET', '/mock/metrics')), source: 'mock' };
+        } catch (err) {
+          logger.warn('mock world metrics read failed, synthesising', { err: err.message });
         }
       }
       return { ...syntheticMetrics(), source: 'synthetic' };

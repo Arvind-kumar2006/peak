@@ -75,6 +75,12 @@ export const config = {
     pollIntervalMs: num(process.env.POLL_INTERVAL_MS, 1500),
   },
 
+  // MCP mock world (MOCK=1 servers, scripts/dev-mock-stack.sh). When P1's app is not
+  // reachable, Simulate / Reset / metrics go here instead. Any MCP server's base URL works.
+  mockWorld: {
+    url: (process.env.MOCK_WORLD_URL || '').replace(/\/+$/, ''),
+  },
+
   demoApp: {
     url: (process.env.DEMO_APP_URL || 'http://localhost:3000').replace(/\/+$/, ''),
     adminToken: process.env.ADMIN_TOKEN || 'change-me',
