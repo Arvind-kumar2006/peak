@@ -44,22 +44,19 @@ export async function getOrder(id) {
 /**
  * Background reconciliation: page through recent orders to refresh the
  * dashboard's "recent activity" panel.
- *
- * Scoped per page — each checkout is committed and handed back before the next
- * page starts.
  */
 export async function reconcileRecentOrders() {
   const pages = Math.max(1, config.reconcile.pages);
+  // Reuse a single client for the whole walk: per-page checkout was showing up
+  // as the top cost in the profile, and the pages are small enough to read in
+  // one pass.
+  const client = await acquire();
+  await client.query('BEGIN');
   let scanned = 0;
   for (let page = 0; page < pages; page += 1) {
-    const client = await acquire();
-    try {
-      const { rows } = await client.query(RECONCILE_SQL, [PAGE_SIZE]);
-      scanned += rows.length;
-      if (rows.length < PAGE_SIZE) break;
-    } finally {
-      release(client);
-    }
+    const { rows } = await client.query(RECONCILE_SQL, [PAGE_SIZE]);
+    scanned += rows.length;
+    if (rows.length < PAGE_SIZE) break;
   }
   logger.debug('reconciled recent orders', { pages, scanned });
   return scanned;
