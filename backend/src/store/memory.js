@@ -1,0 +1,180 @@
+// In-memory store — the fallback when no DATABASE_URL is set.
+//
+// Not a lesser implementation: it satisfies the same interface with the same
+// semantics (event de-duplication, ordering, json round-tripping), so the whole
+// demo works before Neon is provisioned. The only difference is that it forgets
+// everything on restart, which for a live demo is an acceptable trade for not
+// being the thing that blocks the demo.
+//
+// Picked automatically by store/index.js.
+
+import { logger } from '../logger.js';
+
+export function createMemoryStore() {
+  const incidents = new Map();
+  const events = new Map(); // incidentId -> array
+  const decisions = new Map(); // incidentId -> array
+  const samples = [];
+  let eventSeq = 0;
+  let decisionSeq = 0;
+
+  const nowIso = () => new Date().toISOString();
+  const row = (r) => ({ ...r });
+
+  return {
+    kind: 'memory',
+
+    async init() {
+      logger.warn('using the in-memory store — incidents will not survive a restart.');
+      logger.warn('set PEAK_DATABASE_URL to a Neon connection string to persist them.');
+    },
+
+    async createIncident(r) {
+      const created = {
+        id: r.id,
+        session_id: r.sessionId ?? null,
+        scenario: r.scenario ?? null,
+        description: r.description ?? null,
+        status: r.status,
+        diagnosis: r.diagnosis ?? null,
+        resolution: r.resolution ?? null,
+        pending_action: r.pendingAction ?? null,
+        decision: r.decision ?? null,
+        error: r.error ?? null,
+        trueforge_url: r.trueforgeUrl ?? null,
+        last_event_at: null,
+        stalled: false,
+        turn_done: false,
+        created_at: nowIso(),
+        updated_at: nowIso(),
+      };
+      incidents.set(r.id, created);
+      events.set(r.id, []);
+      decisions.set(r.id, []);
+      return row(created);
+    },
+
+    async getIncident(id) {
+      const found = incidents.get(id);
+      return found ? row(found) : null;
+    },
+
+    async listIncidents({ limit = 50 } = {}) {
+      return [...incidents.values()]
+        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+        .slice(0, limit)
+        .map(row);
+    },
+
+    async updateIncident(id, patch) {
+      const found = incidents.get(id);
+      if (!found) return null;
+      // Column map rather than a switch, so it stays in step with the SQL
+      // whitelist in pg.js. Unknown keys are ignored, same as Postgres.
+      const columns = {
+        status: 'status',
+        diagnosis: 'diagnosis',
+        resolution: 'resolution',
+        pendingAction: 'pending_action',
+        decision: 'decision',
+        error: 'error',
+        lastEventAt: 'last_event_at',
+        stalled: 'stalled',
+        turnDone: 'turn_done',
+      };
+      for (const [key, column] of Object.entries(columns)) {
+        if (!(key in patch)) continue;
+        const isBool = key === 'stalled' || key === 'turnDone';
+        found[column] = isBool ? Boolean(patch[key]) : patch[key];
+      }
+      found.updated_at = nowIso();
+      return row(found);
+    },
+
+    /** Same de-dup contract as Postgres: (incident, event) is unique. */
+    async appendEvents(incidentId, list) {
+      const bucket = events.get(incidentId);
+      if (!bucket) return 0;
+      const seen = new Set(bucket.map((e) => e.event_id));
+      let inserted = 0;
+      for (const e of list) {
+        if (seen.has(e.eventId)) continue;
+        seen.add(e.eventId);
+        bucket.push({
+          id: ++eventSeq,
+          incident_id: incidentId,
+          event_id: e.eventId,
+          type: e.type,
+          payload: e.payload ?? null,
+          at: e.at ?? nowIso(),
+        });
+        inserted++;
+      }
+      return inserted;
+    },
+
+    async listEvents(incidentId, { limit = 200 } = {}) {
+      return (events.get(incidentId) ?? []).slice(0, limit).map(row);
+    },
+
+    async recordDecision(r) {
+      const bucket = decisions.get(r.incidentId) ?? [];
+      const created = {
+        id: ++decisionSeq,
+        incident_id: r.incidentId,
+        decision: r.decision,
+        reason: r.reason ?? null,
+        actor: r.actor ?? 'operator',
+        tool: r.tool ?? null,
+        args: r.args ?? {},
+        at: nowIso(),
+      };
+      bucket.push(created);
+      decisions.set(r.incidentId, bucket);
+      return row(created);
+    },
+
+    async listDecisions(incidentId) {
+      return (decisions.get(incidentId) ?? []).map(row);
+    },
+
+    async addSample(r) {
+      samples.push({
+        id: samples.length + 1,
+        incident_id: r.incidentId ?? null,
+        at: r.at ?? nowIso(),
+        release: r.release ?? null,
+        rpm: r.rpm ?? null,
+        error_rate: r.errorRate ?? null,
+        p95_ms: r.p95Ms ?? null,
+        memory_mb: r.memoryMB ?? null,
+        pool_in_use: r.poolInUse ?? null,
+        pool_waiting: r.poolWaiting ?? null,
+        cache_entries: r.cacheEntries ?? null,
+        raw: r.raw ?? null,
+      });
+    },
+
+    async listSamples({ incidentId, since, limit = 500 } = {}) {
+      const sinceMs = since ? new Date(since).getTime() : null;
+      return samples
+        .filter((s) => (incidentId ? s.incident_id === incidentId : true))
+        .filter((s) => (sinceMs ? new Date(s.at).getTime() >= sinceMs : true))
+        .slice(-limit);
+    },
+
+    async latestSample() {
+      return samples.length ? row(samples[samples.length - 1]) : null;
+    },
+
+    async prune({ keepSamples = 20000 } = {}) {
+      if (samples.length <= keepSamples) return;
+      samples.splice(0, samples.length - keepSamples);
+    },
+
+    async close() {
+      // Nothing to close. The point of this store is that there is no
+      // connection to lose.
+    },
+  };
+}

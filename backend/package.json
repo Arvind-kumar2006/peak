@@ -1,0 +1,20 @@
+{
+  "name": "@peak/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PEAK backend — thin proxy over TrueForge (P4). See contracts/backend-api.md",
+  "engines": {
+    "node": ">=22.14"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "migrate": "node src/store/migrate.js",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  }
+}
