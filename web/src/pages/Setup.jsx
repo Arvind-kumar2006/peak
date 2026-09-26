@@ -114,7 +114,7 @@ function SourceCard({ kind, integration, onChange }) {
 }
 
 function ServiceForm({ initial, projects, onDone, onCancel }) {
-  const [form, setForm] = useState(initial ?? { name: '', healthUrl: '', sentryProject: '' });
+  const [form, setForm] = useState(initial ?? { name: '', healthUrl: '', sentryProject: '', latencyThresholdMs: '' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
@@ -158,6 +158,10 @@ function ServiceForm({ initial, projects, onDone, onCancel }) {
           )}
         </label>
       </div>
+      <label className="narrow">
+        Alert when slower than (ms)<span className="muted"> (optional)</span>
+        <input type="number" min="50" step="1" value={form.latencyThresholdMs ?? ''} onChange={set('latencyThresholdMs')} placeholder="e.g. 2000" />
+      </label>
       <p className="muted small">
         If the health endpoint returns JSON with a <code>release</code>, <code>commit</code> or <code>sha</code> field, PEAK also confirms the fix actually deployed.
       </p>
@@ -250,7 +254,10 @@ export default function Setup() {
                   <tr key={s.id}>
                     <td>{s.name}</td>
                     <td className="mono small">{s.healthUrl ?? '—'}</td>
-                    <td className="mono small">{s.sentryProject ?? '—'}</td>
+                    <td className="mono small">
+                      {s.sentryProject ?? '—'}
+                      {s.latencyThresholdMs && <div className="muted">slow &gt; {s.latencyThresholdMs}ms</div>}
+                    </td>
                     <td>
                       <Badge tone={SERVICE_STATUS[s.status]?.tone}>{SERVICE_STATUS[s.status]?.label ?? s.status}</Badge>
                     </td>

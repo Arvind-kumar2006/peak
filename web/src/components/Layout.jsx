@@ -1,4 +1,5 @@
-import { NavLink, useNavigate } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
+import ErrorBoundary from './ErrorBoundary.jsx';
 import { useUser } from '../App.jsx';
 import { api } from '../api.js';
 
@@ -16,6 +17,7 @@ export function Logo() {
 export default function Layout({ children }) {
   const { user, setUser } = useUser();
   const navigate = useNavigate();
+  const location = useLocation();
   const signOut = async () => {
     await api('/auth/logout', { method: 'POST' });
     setUser(null);
@@ -39,7 +41,9 @@ export default function Layout({ children }) {
           Sign out
         </button>
       </header>
-      <main>{children}</main>
+      <main>
+        <ErrorBoundary resetKey={location.pathname}>{children}</ErrorBoundary>
+      </main>
     </div>
   );
 }

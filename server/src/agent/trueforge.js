@@ -146,13 +146,6 @@ export function createClient({ baseUrl = process.env.TRUEFORGE_URL ?? 'http://lo
     return pending.map(({ id, tool, server, args }) => ({ toolCallId: id, threadId: paused.threadId, tool, server, args }));
   }
 
-  // Latest submit_diagnosis / submit_resolution arguments — the structured incident report.
-  async function getReports(sessionId) {
-    const calls = await listToolCalls(sessionId);
-    const last = (tool) => calls.filter((c) => c.tool === tool && c.args && !c.result?.error).at(-1)?.args ?? null;
-    return { diagnosis: last('submit_diagnosis'), resolution: last('submit_resolution') };
-  }
-
   function decide(session, paused, decision, reason, opts = {}) {
     return runTurn(
       session,
@@ -173,7 +166,6 @@ export function createClient({ baseUrl = process.env.TRUEFORGE_URL ?? 'http://lo
     listSessionEvents,
     listToolCalls,
     getPendingAction,
-    getReports,
     registerProviders,
     registerMcpServer,
     createSession,

@@ -25,6 +25,7 @@ export const config = {
     intervalSec: num(process.env.MONITOR_INTERVAL_SEC, 10),
     errorThresholdPerMin: num(process.env.ERROR_THRESHOLD_PER_MIN, 5),
     failedChecksToAlert: num(process.env.FAILED_CHECKS_TO_ALERT, 2),
+    incidentRetentionDays: num(process.env.INCIDENT_RETENTION_DAYS, 90),
   },
   verify: {
     // After the fix, wait for the service to report the new release (if it reports one) …

@@ -30,6 +30,8 @@ PEAK watches your production services. When one breaks, an AI agent reads the Se
 5. **Fix.** PEAK adds a revert commit on top of the branch through the GitHub API; history is not rewritten. It refuses if a later commit touched the same files. Your CD pipeline deploys the revert.
 6. **Verify.** If the health endpoint reports a `release`/`commit`/`sha`, PEAK waits until the revert is live. Then it watches health and errors for `VERIFY_WINDOW_SEC`. The result is **Resolved** or **Not recovered**, with before/after errors/min. The Slack message is updated.
 
+**Humans can always override.** Any incident can be **marked resolved** by hand, with a note ("fixed it myself", false alarm); this also stops the agent. Failed or handed-off incidents can be **re-run**. A service can be **muted** for 30m/1h/4h during deploys or maintenance: checks keep running, but no incident opens. Each service can also have a **latency threshold**, so slow responses alert before the service goes down.
+
 If no commit explains the errors, the agent proposes nothing and the incident goes to **Needs a human**. Rejected, unresolved and failed incidents stop PEAK from reopening one for that service for 15 minutes.
 
 ## Run it
@@ -80,4 +82,6 @@ server/model/groq-proxy.js   needed for Groq (TrueForge 0.2.1 sends fields Groq 
 web/src/                React dashboard: login, connections, services, incidents
 ```
 
-`npm test` runs the server unit tests.
+`npm test` runs the server tests: both approval gates, `revertCommit` against a fake GitHub, detection/mute/cooldown, auth, rate limits and crypto. CI (`.github/workflows/ci.yml`) runs them and the web build on every push.
+
+`GET /api/health` is a liveness probe; `GET /api/ready` returns 503 unless the database is writable and TrueForge + a model are reachable. Auth endpoints are rate limited (30 requests / 15 min per IP, 10 logins / 15 min per email, 10 sign-ups / hour per IP).

@@ -88,11 +88,29 @@ CREATE TABLE IF NOT EXISTS incident_events (
   title TEXT NOT NULL,
   detail TEXT
 );
+CREATE TABLE IF NOT EXISTS oauth_states (
+  state TEXT PRIMARY KEY,
+  expires_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
 `);
+
+// Columns added after the first release. ADD COLUMN fails if it exists, which is fine.
+for (const [table, column] of [
+  ['services', 'muted_until TEXT'],
+  ['services', 'mute_reason TEXT'],
+  ['services', 'latency_threshold_ms INTEGER'],
+  ['services', 'slow_checks INTEGER NOT NULL DEFAULT 0'],
+  ['incidents', 'closure TEXT'],
+]) {
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
+  } catch {}
+}
+db.exec('CREATE INDEX IF NOT EXISTS incidents_by_workspace ON incidents(workspace_id, started_at)');
 
 export const now = () => new Date().toISOString();
 export const newId = (prefix) => `${prefix}_${randomBytes(6).toString('hex')}`;

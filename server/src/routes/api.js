@@ -8,6 +8,7 @@ import {
   createService,
   updateService,
   deleteService,
+  setMute,
   listSamples,
   listIncidents,
   getIncident,
@@ -15,7 +16,7 @@ import {
   OPEN_STATUSES,
 } from '../store.js';
 import { checkService } from '../monitor.js';
-import { decide, agentStatus } from '../agent/runner.js';
+import { decide, closeManually, rerun, agentStatus } from '../agent/runner.js';
 import { subscribe, publish } from '../events.js';
 import { config } from '../config.js';
 
@@ -40,10 +41,12 @@ function serviceInput(body) {
   const name = String(body.name ?? '').trim();
   const healthUrl = String(body.healthUrl ?? '').trim();
   const sentryProject = String(body.sentryProject ?? '').trim();
+  const latencyThresholdMs = body.latencyThresholdMs === '' || body.latencyThresholdMs == null ? null : Number(body.latencyThresholdMs);
   if (!name) throw bad('Name is required');
+  if (latencyThresholdMs != null && !(Number.isInteger(latencyThresholdMs) && latencyThresholdMs >= 50)) throw bad('Latency threshold must be a whole number of milliseconds, at least 50');
   if (healthUrl && !/^https?:\/\/\S+$/.test(healthUrl)) throw bad('Health URL must start with http:// or https://');
   if (!healthUrl && !sentryProject) throw bad('Give the service a health URL, a Sentry project, or both');
-  return { name, healthUrl, sentryProject };
+  return { name, healthUrl, sentryProject, latencyThresholdMs };
 }
 
 const withIncident = (s) => ({ ...s, openIncident: listIncidents(s.workspaceId, { limit: 20 }).find((i) => i.serviceId === s.id && OPEN_STATUSES.includes(i.status))?.id ?? null });
@@ -99,6 +102,17 @@ api.put('/services/:id', async (req, res) => {
   res.json(getService(service.id));
 });
 
+// Snooze alerting for a deploy or maintenance window: { minutes, reason }. minutes 0 = unmute.
+api.post('/services/:id/mute', (req, res) => {
+  ownService(req);
+  const minutes = Number(req.body?.minutes ?? 0);
+  if (!(minutes >= 0 && minutes <= 7 * 24 * 60)) throw bad('minutes must be between 0 and 10080');
+  const until = minutes ? new Date(Date.now() + minutes * 60_000).toISOString() : null;
+  const service = setMute(req.params.id, { until, reason: String(req.body?.reason ?? '').slice(0, 200) });
+  publish(req.workspaceId);
+  res.json(service);
+});
+
 api.delete('/services/:id', (req, res) => {
   ownService(req);
   deleteService(req.params.id);
@@ -108,7 +122,12 @@ api.delete('/services/:id', (req, res) => {
 
 // ——— Incidents ———
 
-api.get('/incidents', (req, res) => res.json(listIncidents(req.workspaceId)));
+// Paged, newest first: ?before=<startedAt of the last row>&limit=
+api.get('/incidents', (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
+  const items = listIncidents(req.workspaceId, { limit: limit + 1, before: req.query.before ? String(req.query.before) : undefined });
+  res.json({ items: items.slice(0, limit), next: items.length > limit ? items[limit - 1].startedAt : null });
+});
 
 api.get('/incidents/:id', (req, res) => {
   const incident = ownIncident(req);
@@ -120,6 +139,16 @@ api.get('/incidents/:id', (req, res) => {
 api.post('/incidents/:id/approve', async (req, res) => {
   ownIncident(req);
   res.json(await decide(req.params.id, { decision: 'approve', by: req.user.name || req.user.email }));
+});
+
+api.post('/incidents/:id/resolve', async (req, res) => {
+  ownIncident(req);
+  res.json(await closeManually(req.params.id, { by: req.user.name || req.user.email, note: String(req.body?.note ?? '').slice(0, 500) }));
+});
+
+api.post('/incidents/:id/rerun', async (req, res) => {
+  ownIncident(req);
+  res.json(await rerun(req.params.id, { by: req.user.name || req.user.email }));
 });
 
 api.post('/incidents/:id/reject', async (req, res) => {

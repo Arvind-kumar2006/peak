@@ -6,13 +6,14 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { adapters } from '../integrations/index.js';
-import { getIncident, getService, listSamples, updateIncident, addEvent, transition } from '../store.js';
+import { getIncident, getService, listSamples, updateIncident, addEvent } from '../store.js';
 import { checkHealth } from '../health.js';
 import { startVerification } from '../verify.js';
 import { publish } from '../events.js';
 
 const MAX_PATCH = 6000;
 const MAX_FILE = 12000;
+export { buildServer };
 
 const ok = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 1) }] });
 const fail = (message) => ({ content: [{ type: 'text', text: JSON.stringify({ error: message }) }], isError: true });
@@ -203,8 +204,9 @@ function buildServer() {
       if (!planned.sha.startsWith(sha) && !sha.startsWith(planned.sha)) throw new Error(`Only the proposed commit ${planned.sha} may be reverted`);
       if (incident.approval?.decision !== 'approved') throw new Error('This fix has not been approved in PEAK');
       if (incident.fix) throw new Error(`Already reverted as ${incident.fix.revertSha}`);
+      // Approval moves the incident to fixing; anything else (closed by hand, re-run) means stop.
+      if (incident.status !== 'fixing') throw new Error(`Incident is ${incident.status}; the fix can no longer be applied`);
 
-      transition(incident.id, ['awaiting_approval', 'investigating'], 'fixing');
       const result = await requireGithub(ctx).revertCommit(planned.sha, { reason });
       const fix = { type: 'revert_commit', targetSha: planned.sha, ...result, appliedAt: new Date().toISOString() };
       updateIncident(incident.id, { fix });

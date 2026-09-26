@@ -14,34 +14,59 @@ const toService = (r) =>
     release: r.release,
     lastCheckedAt: r.last_checked_at,
     failedChecks: r.failed_checks,
+    slowChecks: r.slow_checks,
+    latencyThresholdMs: r.latency_threshold_ms,
+    mutedUntil: r.muted_until && r.muted_until > now() ? r.muted_until : null,
+    muteReason: r.muted_until && r.muted_until > now() ? r.mute_reason : null,
   };
 
 export const getService = (id) => toService(db.prepare('SELECT * FROM services WHERE id = ?').get(id));
 export const listServices = (workspaceId) => db.prepare('SELECT * FROM services WHERE workspace_id = ? ORDER BY created_at').all(workspaceId).map(toService);
 export const allServices = () => db.prepare('SELECT * FROM services').all().map(toService);
 
-export function createService(workspaceId, { name, healthUrl, sentryProject }) {
+export function createService(workspaceId, { name, healthUrl, sentryProject, latencyThresholdMs }) {
   const id = newId('svc');
-  db.prepare('INSERT INTO services (id, workspace_id, name, health_url, sentry_project, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+  db.prepare('INSERT INTO services (id, workspace_id, name, health_url, sentry_project, latency_threshold_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
     id,
     workspaceId,
     name,
     healthUrl || null,
     sentryProject || null,
+    latencyThresholdMs || null,
     now(),
   );
   return getService(id);
 }
 
-export function updateService(id, { name, healthUrl, sentryProject }) {
-  db.prepare('UPDATE services SET name = ?, health_url = ?, sentry_project = ?, status = ?, failed_checks = 0 WHERE id = ?').run(name, healthUrl || null, sentryProject || null, 'unknown', id);
+export function updateService(id, { name, healthUrl, sentryProject, latencyThresholdMs }) {
+  db.prepare('UPDATE services SET name = ?, health_url = ?, sentry_project = ?, latency_threshold_ms = ?, status = ?, failed_checks = 0, slow_checks = 0 WHERE id = ?').run(
+    name,
+    healthUrl || null,
+    sentryProject || null,
+    latencyThresholdMs || null,
+    'unknown',
+    id,
+  );
+  return getService(id);
+}
+
+// Snooze alerting (deploys, maintenance). Checks keep running; incidents don't open.
+export function setMute(id, { until, reason }) {
+  db.prepare('UPDATE services SET muted_until = ?, mute_reason = ? WHERE id = ?').run(until ?? null, until ? reason || null : null, id);
   return getService(id);
 }
 
 export const deleteService = (id) => db.prepare('DELETE FROM services WHERE id = ?').run(id);
 
-export function recordCheck(serviceId, { status, release, failedChecks, sample }) {
-  db.prepare('UPDATE services SET status = ?, release = COALESCE(?, release), failed_checks = ?, last_checked_at = ? WHERE id = ?').run(status, release ?? null, failedChecks, now(), serviceId);
+export function recordCheck(serviceId, { status, release, failedChecks, slowChecks = 0, sample }) {
+  db.prepare('UPDATE services SET status = ?, release = COALESCE(?, release), failed_checks = ?, slow_checks = ?, last_checked_at = ? WHERE id = ?').run(
+    status,
+    release ?? null,
+    failedChecks,
+    slowChecks,
+    now(),
+    serviceId,
+  );
   db.prepare('INSERT INTO samples (service_id, at, healthy, latency_ms, errors_per_min, release) VALUES (?, ?, ?, ?, ?, ?)').run(
     serviceId,
     now(),
@@ -66,7 +91,7 @@ export const pruneSamples = () => db.prepare('DELETE FROM samples WHERE at < ?')
 
 export const OPEN_STATUSES = ['investigating', 'awaiting_approval', 'fixing', 'verifying'];
 
-const INCIDENT_JSON = ['signal', 'diagnosis', 'pending_action', 'approval', 'fix', 'verification', 'agent', 'slack'];
+const INCIDENT_JSON = ['signal', 'diagnosis', 'pending_action', 'approval', 'fix', 'verification', 'agent', 'slack', 'closure'];
 
 const toIncident = (r) =>
   r && {
@@ -83,6 +108,7 @@ const toIncident = (r) =>
     verification: parse(r.verification),
     agent: parse(r.agent),
     slack: parse(r.slack),
+    closure: parse(r.closure),
     startedAt: r.started_at,
     resolvedAt: r.resolved_at,
     updatedAt: r.updated_at,
@@ -90,8 +116,19 @@ const toIncident = (r) =>
 
 export const getIncident = (id) => toIncident(db.prepare('SELECT * FROM incidents WHERE id = ?').get(id));
 
-export function listIncidents(workspaceId, { limit = 50 } = {}) {
-  return db.prepare('SELECT * FROM incidents WHERE workspace_id = ? ORDER BY started_at DESC LIMIT ?').all(workspaceId, limit).map(toIncident);
+// Newest first. Pass the last row's startedAt as `before` for the next page.
+export function listIncidents(workspaceId, { limit = 50, before } = {}) {
+  const rows = before
+    ? db.prepare('SELECT * FROM incidents WHERE workspace_id = ? AND started_at < ? ORDER BY started_at DESC LIMIT ?').all(workspaceId, before, limit)
+    : db.prepare('SELECT * FROM incidents WHERE workspace_id = ? ORDER BY started_at DESC LIMIT ?').all(workspaceId, limit);
+  return rows.map(toIncident);
+}
+
+// Closed incidents (and their timelines, via ON DELETE CASCADE) older than the retention window.
+export function pruneIncidents(days) {
+  if (!days) return;
+  const marks = OPEN_STATUSES.map(() => '?').join(',');
+  db.prepare(`DELETE FROM incidents WHERE started_at < ? AND status NOT IN (${marks})`).run(new Date(Date.now() - days * 86400_000).toISOString(), ...OPEN_STATUSES);
 }
 
 export function openIncidentFor(serviceId) {

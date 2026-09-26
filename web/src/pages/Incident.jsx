@@ -21,6 +21,7 @@ function stepState(inc) {
     approval: inc.approval?.decision === 'approved',
     fix: !!inc.fix,
     verify: s === 'resolved',
+    ...(inc.closure ? { investigating: true, approval: true, fix: true } : {}),
   };
   const current = { investigating: 'investigating', awaiting_approval: 'approval', fixing: 'fix', verifying: 'verify' }[s];
   const failed = { rejected: 'approval', unresolved: 'verify', failed: inc.fix ? 'verify' : inc.approval ? 'fix' : 'investigating', needs_attention: 'approval' }[s];
@@ -254,6 +255,59 @@ function Verification({ incident }) {
   );
 }
 
+const RERUNNABLE = ['failed', 'needs_attention', 'unresolved', 'rejected'];
+
+// Human overrides: close the incident by hand, or run the investigation again.
+function IncidentActions({ incident, onDone }) {
+  const [closing, setClosing] = useState(false);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  if (incident.status === 'resolved') return null;
+
+  const act = async (what, body) => {
+    setBusy(what);
+    setError(null);
+    try {
+      await api(`/incidents/${incident.id}/${what}`, { method: 'POST', body });
+      setClosing(false);
+      onDone();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="incident-actions">
+      {closing ? (
+        <div className="reject">
+          <input placeholder="What fixed it? (optional)" value={note} onChange={(e) => setNote(e.target.value)} autoFocus />
+          <button onClick={() => act('resolve', { note })} disabled={!!busy}>
+            {busy === 'resolve' ? 'Closing…' : 'Mark resolved'}
+          </button>
+          <button className="ghost" onClick={() => setClosing(false)}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <div className="row">
+          {RERUNNABLE.includes(incident.status) && (
+            <button className="secondary small" onClick={() => act('rerun')} disabled={!!busy}>
+              {busy === 'rerun' ? 'Starting…' : 'Re-run investigation'}
+            </button>
+          )}
+          <button className="secondary small" onClick={() => setClosing(true)}>
+            Mark resolved
+          </button>
+        </div>
+      )}
+      <ErrorNote error={error} />
+    </div>
+  );
+}
+
 const EVENT_ICON = {
   detected: '🚨',
   agent: '🤖',
@@ -316,12 +370,22 @@ export default function Incident() {
           </div>
           <h1>{incident.title}</h1>
         </div>
-        {incident.agent?.sessionUrl && (
-          <a className="button secondary small" href={incident.agent.sessionUrl} target="_blank" rel="noreferrer">
-            Agent session ↗
-          </a>
-        )}
+        <div className="row">
+          {incident.agent?.sessionUrl && (
+            <a className="button secondary small" href={incident.agent.sessionUrl} target="_blank" rel="noreferrer">
+              Agent session ↗
+            </a>
+          )}
+        </div>
       </div>
+
+      <IncidentActions incident={incident} onDone={reload} />
+      {incident.closure && (
+        <div className="banner good">
+          ✓ Marked resolved by {incident.closure.by} at {time(incident.closure.at)}
+          {incident.closure.note && <> — “{incident.closure.note}”</>}
+        </div>
+      )}
 
       <Steps incident={incident} />
 

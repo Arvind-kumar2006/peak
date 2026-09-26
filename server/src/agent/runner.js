@@ -6,7 +6,7 @@ import { token } from '../crypto.js';
 import { providersFromEnv, modelRef } from './providers.js';
 import { createClient } from './trueforge.js';
 import { buildAgentSpec, incidentPrompt, MCP_SERVER_NAME } from './spec.js';
-import { getIncident, getService, updateIncident, transition, addEvent, listEvents, incidentsInStatus } from '../store.js';
+import { getIncident, getService, updateIncident, transition, addEvent, listEvents, incidentsInStatus, OPEN_STATUSES } from '../store.js';
 import { notify } from '../notify.js';
 import { startVerification } from '../verify.js';
 import { publish } from '../events.js';
@@ -63,10 +63,12 @@ function changed(incidentId) {
 }
 
 function fail(incidentId, message) {
+  // No-op if a human already closed the incident (e.g. a cancelled session reporting back).
   const inc = transition(incidentId, ['investigating', 'awaiting_approval', 'fixing'], 'failed', { resolvedAt: new Date().toISOString() });
+  if (!inc) return;
   saveAgent(incidentId, { error: message });
   addEvent(incidentId, 'agent.error', 'Agent stopped', { error: message });
-  if (inc) changed(incidentId);
+  changed(incidentId);
 }
 
 export function startInvestigation(incidentId) {
@@ -137,6 +139,70 @@ export async function decide(incidentId, { decision, by, reason }) {
     ? tf.approve(session, paused, { onTurn: onTurn(incidentId) })
     : tf.reject(session, paused, reason || `Rejected by ${by}`, { onTurn: onTurn(incidentId) });
   resume.then((result) => settle(incidentId, session, result)).catch((err) => (decision === 'approve' ? fail(incidentId, err.message) : log(err.message)));
+  return inc;
+}
+
+const CLOSED = ['needs_attention', 'rejected', 'unresolved', 'failed'];
+const httpError = (message, status) => Object.assign(new Error(message), { status });
+
+// Stop the agent's TrueForge session for an incident (paused approvals are denied first).
+async function stopAgent(incident, reason) {
+  if (!tf || !incident.agent?.sessionId) return;
+  try {
+    const session = await tf.loadSession(incident.agent.sessionId);
+    if (incident.status === 'awaiting_approval' && incident.pendingAction?.paused) {
+      await tf.api('POST', `/sessions/${session.id}/turns`, {
+        stream: false,
+        previous_turn_id: incident.pendingAction.paused.turnId,
+        input: incident.pendingAction.paused.toolCalls.map((tc) => ({
+          type: 'user.tool_approval',
+          thread_id: incident.pendingAction.paused.threadId,
+          tool_call_id: tc.id,
+          approval: { status: 'deny', reason },
+        })),
+      });
+    }
+    await tf.api('POST', `/sessions/${session.id}/cancel`).catch(() => {});
+  } catch (err) {
+    log(`could not stop session for ${incident.id}: ${err.message}`);
+  }
+}
+
+// A human closes the incident ("I fixed it by hand", false alarm, …). Works from any state
+// except resolved; stops the agent so it can't act afterwards.
+export async function closeManually(incidentId, { by, note }) {
+  const incident = getIncident(incidentId);
+  if (incident.status === 'resolved') throw httpError('Incident is already resolved', 409);
+  const at = new Date().toISOString();
+  const closure = { by, note: note || null, at, from: incident.status };
+  const inc = transition(incidentId, [...OPEN_STATUSES, ...CLOSED], 'resolved', { closure, resolvedAt: at });
+  if (!inc) throw httpError('Incident changed; try again', 409);
+  addEvent(incidentId, 'resolved', `Marked resolved by ${by}`, closure);
+  changed(incidentId);
+  if (OPEN_STATUSES.includes(incident.status)) stopAgent(incident, `Closed manually by ${by}`);
+  return inc;
+}
+
+// Start a fresh investigation on a closed-without-fix incident (failed, needs a human, …).
+export async function rerun(incidentId, { by }) {
+  const incident = getIncident(incidentId);
+  if (!CLOSED.includes(incident.status)) throw httpError(`Incident is ${incident.status}; only failed or handed-off incidents can be re-run`, 409);
+  if (!agentStatus.ready) throw httpError(agentStatus.error ?? 'Agent is not ready', 503);
+  const previous = { diagnosis: incident.diagnosis, approval: incident.approval, fix: incident.fix, verification: incident.verification, agent: incident.agent, status: incident.status };
+  const inc = transition(incidentId, CLOSED, 'investigating', {
+    diagnosis: null,
+    pendingAction: null,
+    approval: null,
+    fix: null,
+    verification: null,
+    agent: null,
+    closure: null,
+    resolvedAt: null,
+  });
+  if (!inc) throw httpError('Incident changed; try again', 409);
+  addEvent(incidentId, 'agent', `Investigation re-run by ${by}`, { previous });
+  changed(incidentId);
+  startInvestigation(incidentId);
   return inc;
 }
 

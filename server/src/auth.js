@@ -4,6 +4,14 @@ import { db, now, newId } from './db.js';
 import { hashPassword, verifyPassword, token } from './crypto.js';
 import { config } from './config.js';
 import { applyEnvDefaults } from './integrations/defaults.js';
+import { rateLimit } from './ratelimit.js';
+
+const MINUTE = 60_000;
+// Per IP across all auth endpoints, plus per email on login (slows credential stuffing
+// that rotates IPs against one account).
+const perIp = rateLimit({ windowMs: 15 * MINUTE, max: 30 });
+const signupPerIp = rateLimit({ windowMs: 60 * MINUTE, max: 10, message: 'Too many sign-ups from this address. Try again later.' });
+export const loginPerEmail = rateLimit({ windowMs: 15 * MINUTE, max: 10, key: (req) => String(req.body?.email ?? '').trim().toLowerCase() || null });
 
 const COOKIE = 'peak_session';
 const SESSION_DAYS = 30;
@@ -60,10 +68,11 @@ const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, github: !!u
 const bad = (res, msg, status = 400) => res.status(status).json({ error: msg });
 
 export const authRoutes = Router();
+authRoutes.use(['/signup', '/login', '/github', '/github/callback'], perIp);
 
 authRoutes.get('/providers', (req, res) => res.json({ github: !!(config.github.clientId && config.github.clientSecret) }));
 
-authRoutes.post('/signup', (req, res) => {
+authRoutes.post('/signup', signupPerIp, (req, res) => {
   const email = String(req.body.email ?? '').trim().toLowerCase();
   const password = String(req.body.password ?? '');
   const name = String(req.body.name ?? '').trim() || null;
@@ -75,10 +84,11 @@ authRoutes.post('/signup', (req, res) => {
   res.status(201).json({ user: publicUser(user) });
 });
 
-authRoutes.post('/login', (req, res) => {
+authRoutes.post('/login', loginPerEmail, (req, res) => {
   const email = String(req.body.email ?? '').trim().toLowerCase();
   const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
   if (!user || !verifyPassword(String(req.body.password ?? ''), user.password_hash)) return bad(res, 'Wrong email or password', 401);
+  loginPerEmail.reset(email);
   startSession(res, user.id);
   res.json({ user: publicUser(user) });
 });
@@ -98,12 +108,11 @@ authRoutes.get('/me', (req, res) => {
 
 // ——— GitHub OAuth (sign-in only; repository access is a separate token on the Connect page) ———
 
-const oauthStates = new Map(); // state → expiry
-
 authRoutes.get('/github', (req, res) => {
   if (!config.github.clientId) return bad(res, 'GitHub sign-in is not configured', 404);
   const state = token(16);
-  oauthStates.set(state, Date.now() + 10 * 60_000);
+  db.prepare('DELETE FROM oauth_states WHERE expires_at < ?').run(now());
+  db.prepare('INSERT INTO oauth_states (state, expires_at) VALUES (?, ?)').run(state, new Date(Date.now() + 10 * 60_000).toISOString());
   const qs = new URLSearchParams({
     client_id: config.github.clientId,
     redirect_uri: `${config.appUrl}/api/auth/github/callback`,
@@ -115,9 +124,9 @@ authRoutes.get('/github', (req, res) => {
 
 authRoutes.get('/github/callback', async (req, res) => {
   const { code, state } = req.query;
-  const expiry = oauthStates.get(state);
-  oauthStates.delete(state);
-  if (!code || !expiry || expiry < Date.now()) return res.redirect(`${config.appUrl}/login?error=github`);
+  // Stored in the database so a server restart mid-login doesn't break it. Single use.
+  const valid = state && db.prepare('DELETE FROM oauth_states WHERE state = ? AND expires_at > ?').run(String(state), now()).changes === 1;
+  if (!code || !valid) return res.redirect(`${config.appUrl}/login?error=github`);
   try {
     const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
       method: 'POST',

@@ -24,5 +24,5 @@ export const incidentPrompt = (incident, service) =>
   `INCIDENT ${incident.id}\n` +
   `Service: ${service.name}\n` +
   `Alert: ${incident.title}\n` +
-  `Started: ${incident.started_at}\n\n` +
+  `Started: ${incident.startedAt}\n\n` +
   `Investigate, diagnose and remediate following your runbook. incident_id = "${incident.id}".`;

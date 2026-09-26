@@ -60,6 +60,15 @@ export function buildMessage(incident, service) {
       );
       break;
     case 'resolved':
+      if (incident.closure) {
+        text = `✅ Incident closed: ${incident.title}`;
+        blocks.push(
+          section(`✅ *Marked resolved by ${incident.closure.by}*\n*${service.name}*: ${incident.title}${incident.closure.note ? `\n> ${incident.closure.note}` : ''}`),
+          section(`Incident duration: ${formatDuration(new Date(incident.resolvedAt ?? Date.now()) - new Date(incident.startedAt))}`),
+        );
+        break;
+      }
+    // falls through
     case 'unresolved': {
       const v = incident.verification ?? {};
       const good = incident.status === 'resolved';

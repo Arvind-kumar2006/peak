@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { api } from '../api.js';
 import { useLive, useNow } from '../hooks.js';
 import { Badge, Card, Sparkline } from '../components/ui.jsx';
 import { STATUS, SERVICE_STATUS, ago, duration, short } from '../format.js';
@@ -40,9 +42,68 @@ function SetupChecklist({ integrations, services }) {
   );
 }
 
+// Snooze alerts during a deploy or maintenance window. Checks keep running.
+function MuteControl({ service }) {
+  const [open, setOpen] = useState(false);
+  const mute = (minutes) => api(`/services/${service.id}/mute`, { method: 'POST', body: { minutes } }).finally(() => setOpen(false));
+  if (service.mutedUntil) {
+    return (
+      <span className="mute-menu">
+        <span className="muted-tag">🔕 muted until {new Date(service.mutedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+        <button className="ghost small" onClick={() => mute(0)}>
+          Unmute
+        </button>
+      </span>
+    );
+  }
+  if (!open) {
+    return (
+      <button className="ghost small" onClick={() => setOpen(true)} title="Pause alerts for a deploy or maintenance">
+        Mute
+      </button>
+    );
+  }
+  return (
+    <span className="mute-menu">
+      {[
+        [30, '30m'],
+        [60, '1h'],
+        [240, '4h'],
+      ].map(([m, label]) => (
+        <button key={m} className="secondary small" onClick={() => mute(m)}>
+          {label}
+        </button>
+      ))}
+      <button className="ghost small" onClick={() => setOpen(false)}>
+        ✕
+      </button>
+    </span>
+  );
+}
+
+// First page comes with the overview; older pages load on demand.
+function useOlderIncidents(first) {
+  const [older, setOlder] = useState([]);
+  const [cursor, setCursor] = useState(undefined);
+  const [loading, setLoading] = useState(false);
+  const next = cursor === undefined ? (first.length >= 20 ? first.at(-1).startedAt : null) : cursor;
+  const loadMore = async () => {
+    setLoading(true);
+    try {
+      const page = await api(`/incidents?limit=25&before=${encodeURIComponent(next)}`);
+      setOlder((o) => [...o, ...page.items]);
+      setCursor(page.next);
+    } finally {
+      setLoading(false);
+    }
+  };
+  return { older, hasMore: !!next, loadMore, loading };
+}
+
 export default function Dashboard() {
   const { data, error } = useLive('/overview');
   const now = useNow();
+  const paging = useOlderIncidents(data?.incidents ?? []);
   if (error) return <div className="center error-note">{error.message}</div>;
   if (!data) return <div className="center muted">Loading…</div>;
 
@@ -111,6 +172,7 @@ export default function Dashboard() {
                     )}
                     {' · '}checked {ago(s.lastCheckedAt, now)}
                   </span>
+                  <MuteControl service={s} />
                 </div>
                 <Sparkline samples={s.samples} threshold={monitor.errorThresholdPerMin} />
                 <div className="service-num">
@@ -148,7 +210,7 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {incidents.map((i) => (
+              {[...incidents, ...paging.older].map((i) => (
                 <tr key={i.id}>
                   <td>
                     <Link to={`/incidents/${i.id}`}>{i.title}</Link>
@@ -164,6 +226,13 @@ export default function Dashboard() {
               ))}
             </tbody>
           </table>
+        )}
+        {paging.hasMore && (
+          <div className="load-more">
+            <button className="secondary small" onClick={paging.loadMore} disabled={paging.loading}>
+              {paging.loading ? 'Loading…' : 'Load older incidents'}
+            </button>
+          </div>
         )}
       </Card>
     </div>

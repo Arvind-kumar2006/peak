@@ -2,7 +2,7 @@
 // Opens an incident (and starts the agent) when a service crosses a threshold.
 import { config } from './config.js';
 import { adapters } from './integrations/index.js';
-import { allServices, recordCheck, openIncidentFor, createIncident, addEvent, pruneSamples } from './store.js';
+import { allServices, recordCheck, openIncidentFor, createIncident, addEvent, pruneSamples, pruneIncidents } from './store.js';
 import { db } from './db.js';
 import { checkHealth } from './health.js';
 import { publish } from './events.js';
@@ -30,26 +30,42 @@ export async function checkService(service) {
   }
 
   const failedChecks = health && !health.healthy ? service.failedChecks + 1 : 0;
+  // Slow = healthy response over the service's latency threshold (if it has one).
+  const isSlow = !!(health?.healthy && service.latencyThresholdMs && health.latencyMs > service.latencyThresholdMs);
+  const slowChecks = isSlow ? service.slowChecks + 1 : 0;
   const down = failedChecks >= config.monitor.failedChecksToAlert;
+  const slow = slowChecks >= config.monitor.failedChecksToAlert;
   const spiking = errorsPerMin != null && errorsPerMin >= config.monitor.errorThresholdPerMin;
-  const status = !health && errorsPerMin == null ? 'unknown' : down ? 'down' : spiking || failedChecks > 0 ? 'degraded' : 'healthy';
+  const status = !health && errorsPerMin == null ? 'unknown' : down ? 'down' : spiking || failedChecks > 0 || slow ? 'degraded' : 'healthy';
 
   recordCheck(service.id, {
     status,
     release: health?.release,
     failedChecks,
+    slowChecks,
     sample: { healthy: health?.healthy ?? null, latencyMs: health?.latencyMs ?? null, errorsPerMin, release: health?.release ?? null },
   });
 
-  if ((down || spiking) && !openIncidentFor(service.id) && !recentlyHandedOff(service.id)) {
+  if ((down || spiking || slow) && !service.mutedUntil && !openIncidentFor(service.id) && !recentlyHandedOff(service.id)) {
     const title = spiking
       ? `Error spike on ${service.name}: ${errorsPerMin} errors/min${down ? ', health check failing' : ''}`
-      : `${service.name} health check failing: ${health.error}`;
+      : down
+        ? `${service.name} health check failing: ${health.error}`
+        : `Slow responses on ${service.name}: ${health.latencyMs}ms (threshold ${service.latencyThresholdMs}ms)`;
     const incident = createIncident({
       workspaceId: service.workspaceId,
       serviceId: service.id,
       title,
-      signal: { errorsPerMin, threshold: config.monitor.errorThresholdPerMin, health, failedChecks, release: health?.release ?? service.release },
+      signal: {
+        errorsPerMin,
+        threshold: config.monitor.errorThresholdPerMin,
+        latencyMs: health?.latencyMs ?? null,
+        latencyThresholdMs: service.latencyThresholdMs ?? null,
+        health,
+        failedChecks,
+        slowChecks,
+        release: health?.release ?? service.release,
+      },
     });
     addEvent(incident.id, 'detected', `Incident detected: ${title}`, incident.signal);
     console.log(`[monitor] incident ${incident.id} on ${service.name}: ${title}`);
@@ -81,6 +97,11 @@ async function tick() {
 
 export function startMonitor() {
   setInterval(tick, config.monitor.intervalSec * 1000);
-  setInterval(pruneSamples, 3600_000);
+  const prune = () => {
+    pruneSamples();
+    pruneIncidents(config.monitor.incidentRetentionDays);
+  };
+  setInterval(prune, 3600_000);
+  prune();
   tick();
 }

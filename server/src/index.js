@@ -7,7 +7,8 @@ import { authRoutes } from './auth.js';
 import { api } from './routes/api.js';
 import { slackRoutes } from './routes/slack.js';
 import { handleMcp } from './agent/tools.js';
-import { initAgent, mcpToken } from './agent/runner.js';
+import { initAgent, mcpToken, agentStatus } from './agent/runner.js';
+import { kvSet } from './db.js';
 import { startMonitor } from './monitor.js';
 import { applyEnvDefaultsToAll } from './integrations/defaults.js';
 
@@ -18,7 +19,19 @@ app.set('trust proxy', 1);
 app.use('/api/slack', slackRoutes); // own body parser (needs the raw body for signatures)
 app.use(express.json({ limit: '1mb' }));
 
+// Liveness: the process answers.
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+// Readiness: the database is writable and the AI path (TrueForge + a model provider) is up.
+app.get('/api/ready', (req, res) => {
+  const checks = { database: true, agent: agentStatus.ready };
+  try {
+    kvSet('ready_probe', new Date().toISOString());
+  } catch {
+    checks.database = false;
+  }
+  const ok = checks.database && checks.agent;
+  res.status(ok ? 200 : 503).json({ ok, checks, ...(agentStatus.error && !agentStatus.ready ? { agentError: agentStatus.error } : {}) });
+});
 app.use('/api/auth', authRoutes);
 app.use('/api', api);
 

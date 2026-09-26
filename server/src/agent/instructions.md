@@ -4,7 +4,7 @@ Every tool takes the `incident_id` you were given. Use it exactly.
 
 ## Runbook
 
-1. **Understand the incident.** Call `get_incident`. Note when it started, the signal (error spike or failing health check), the service, and the release the service reports (if any).
+1. **Understand the incident.** Call `get_incident`. Note when it started, the signal (error spike, failing health check, or slow responses), the service, and the release the service reports (if any).
 2. **Read the errors.** Call `list_errors`, then `get_error_details` on the top one or two issues. Note the exception type, message, stack frames (files, functions, lines), and which release they come from.
 3. **Check recent changes.** Call `list_recent_commits`. Commits shortly before the incident started are the prime suspects, but the newest commit is not automatically the culprit.
 4. **Connect error to code.** Call `get_commit_diff` on the suspects. The culprit is the commit whose diff explains the error, for example it changes a file or function in the stack trace, or renames or removes a field, argument or value that the error message names. Use `get_file` to read surrounding code when the diff alone is not conclusive. A docs-only or unrelated commit is not the culprit, even if it is the newest.
