@@ -28,7 +28,8 @@ Goal: agree on contracts so all four can work in parallel against mocks.
 - [x] **Live approval spike** — allow → tool runs, deny → tool never runs. Verified with scripted mock model (`agent/spike`). Gate is runtime-enforced, model-independent
 - [x] Deterministic mock model (`agent/spike/mock-model.mjs`) — lets P4 build without an API key
 - [x] One-command TrueForge start: `./scripts/start-trueforge.sh`
-- [ ] Optional: one spike run with real Claude (`ANTHROPIC_API_KEY=... npm run spike`) — owner **P3**
+- [x] Model providers: **OpenAI primary, Grok (xAI) fallback** with automatic per-turn fallback (`agent/lib/`) — verified with simulated outage
+- [ ] Real-key check: `OPENAI_API_KEY=... XAI_API_KEY=... npm run spike` and confirm `OPENAI_MODEL` / `XAI_MODEL` ids — owner **P3**
 - [ ] **Each owner reviews their contract file** with the team → mark contracts **frozen**
 - [ ] Everyone: clone repo, copy `.env.example` → `.env`, run `./scripts/start-trueforge.sh` (see [README](README.md#quick-start))
 
@@ -48,6 +49,7 @@ Goal: agree on contracts so all four can work in parallel against mocks.
 | GitHub / Sentry tools | Our own small `github-mcp` (reads + rollback); Sentry `get_recent_errors` lives in `cloud-mcp`. No official servers — fewer auth surprises | Confirm at kickoff |
 | "Resolved" definition | Metrics stable over a **60s window**, not one sample. Symptom-only fixes → **"mitigated"** | Confirm at kickoff |
 | Dashboard updates | Poll `GET /api/incidents/:id` every 2s (no SSE) | Confirm at kickoff |
+| Model | OpenAI primary → Grok (xAI) fallback, order via `MODEL_PROVIDERS`; fallback handled in `agent/lib/trueforge-client.mjs` | ✅ verified (mocks) |
 | Dev without API key | Scripted mock model via TrueForge `custom` provider (OpenAI-compatible) | ✅ verified |
 
 ---
@@ -104,7 +106,8 @@ Goal: agree on contracts so all four can work in parallel against mocks.
   - [ ] Distinguish code-level vs infra-level cause (check commits in incident window)
   - [ ] Propose exactly one whitelisted action
   - [ ] After action: `get_metrics_window` for 60s → resolved / mitigated / not_resolved
-- [ ] Pin model id
+- [ ] Pin model ids (`OPENAI_MODEL`, `XAI_MODEL`)
+- [ ] Run the eval on **both** providers — Grok must also pass, since it's the fallback
 - [x] Final answer = `turn.done.state.output` (documented in `trueforge.md`)
 - [ ] Document where pending tool **name + args** live (the `source_event_id` event) for P4
 - [ ] Extend `mock-model.mjs` to replay Scenario A and B (so P4 can demo without spending tokens)
@@ -118,6 +121,7 @@ Goal: agree on contracts so all four can work in parallel against mocks.
 
 **Contract:** [`backend-api.md`](contracts/backend-api.md) · **Depends on:** contracts only — use a fake incident JSON until P3 is ready.
 
+- [ ] Use `agent/lib/trueforge-client.mjs` (`createSession`, `start`, `approve`, `reject`) — handles model fallback for you
 - [ ] Express backend (port 4000):
   - [ ] `POST /api/incidents` — inject scenario + create TrueForge session + start turn
   - [ ] `GET /api/incidents`, `GET /api/incidents/:id` — status derived from turn events

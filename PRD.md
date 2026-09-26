@@ -22,6 +22,7 @@ TrueForge 0.2.1 was run locally and checked against this PRD. The core assumptio
 | Verification | Re-poll the health signal | Watch metrics over a **60s window**; symptom-only fixes report **"mitigated"** | A restart temporarily hides a leak and would give a false "resolved" |
 | Structured output | Enforced by SKILL.md prompt | Enforced by **`response_format: json_schema`** in the AgentSpec | Verified in TrueForge; stronger than prompt-only |
 | Fix via PR | Implied | `create_fix_pr` listed explicitly as an approval-gated write (stretch) | Opening a PR is a write action |
+| Model | Claude | **OpenAI primary, Grok (xAI) fallback** with automatic per-turn fallback | Team decision; TrueForge has no built-in fallback, so `agent/lib` provides it |
 | Timeline | By feature | By **parallel workstreams** with checkpoints | Four people build against contracts and mocks |
 
 ### v2 — Adopt TrueForge
@@ -172,7 +173,7 @@ Detailed interfaces:
 | Layer | Choice |
 |---|---|
 | Agent runtime | TrueForge `0.2.1` (MIT), local/SQLite mode |
-| Model | Claude, via TrueForge's Anthropic provider (model id pinned) |
+| Model | **OpenAI** (primary) with **Grok / xAI** fallback, model ids pinned. TrueForge has no built-in fallback: `agent/lib/trueforge-client.mjs` switches the session to the next provider when a turn fails |
 | MCP connectors | Node.js ≥ 22.14 + `@modelcontextprotocol/sdk` |
 | Backend | Node.js + Express |
 | Dashboard | React (Vite), one page |
@@ -246,6 +247,7 @@ Ownership and checklists: [TEAM_PLAN.md](TEAM_PLAN.md).
 | TrueForge is pre-1.0 (0.3.0-rc already exists) | Pin `@0.2.1`; the API shapes we rely on are documented in `contracts/trueforge.md` |
 | Approval gate doesn't behave as documented | ✅ Retired. Verified allow/deny end to end in `agent/spike` |
 | Render rollback is slow | P1 measures it early; demo script covers the wait (walk through the evidence while it deploys) |
+| Model provider outage or rate limit | Automatic fallback OpenAI → Grok per turn (verified with a simulated outage); `mock` provider for rehearsals without any API |
 | Model non-determinism | Pin the model id; disable dynamic sub-agents and ask-user questions; the eval script tracks accuracy |
 
 ---

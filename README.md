@@ -115,7 +115,7 @@ Each package gets its own README with run instructions as it's built. Local port
 
 ## Tech stack
 
-TrueForge (agent runtime) · Node.js + `@modelcontextprotocol/sdk` (MCP servers) · Express (backend) · React (dashboard) · Postgres on Neon/Supabase · Sentry · Render · Claude (model)
+TrueForge (agent runtime) · Node.js + `@modelcontextprotocol/sdk` (MCP servers) · Express (backend) · React (dashboard) · Postgres on Neon/Supabase · Sentry · Render · OpenAI (primary model) + Grok/xAI (fallback)
 
 ## Team
 

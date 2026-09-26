@@ -16,7 +16,7 @@ Owner: **P3**. Everything below was checked against a running TrueForge 0.2.1 on
 | Deep link to session UI | ✅ `http://localhost:8790/sessions/{sessionId}` |
 | Tag session with our incident id | ✅ `metadata: { incidentId: "..." }` on session create (string values, ≤128 chars) |
 
-Verified with the scripted mock model (`agent/spike/mock-model.mjs`). The gate is enforced by TrueForge's runtime, independent of which model is used. Still worth one run with real Claude to check prompt behaviour (`ANTHROPIC_API_KEY=... npm run spike`).
+Verified with the scripted mock model (`agent/spike/mock-model.mjs`). The gate is enforced by TrueForge's runtime, independent of which model is used. Still worth one run with a real key to check prompt behaviour (`OPENAI_API_KEY=... npm run spike`).
 
 ## Gotchas found
 
@@ -33,7 +33,7 @@ Verified with the scripted mock model (`agent/spike/mock-model.mjs`). The gate i
 ## API cheat sheet (base `/api/v1`)
 
 ```text
-PUT  /settings/model-providers   { manifest: { type:"anthropic", auth:{api_key}, models:[{model_id, name, properties:{}}] } }
+PUT  /settings/model-providers   { manifest: { type:"openai", auth:{api_key}, models:[{model_id, name, properties:{}}] } }
 PUT  /settings/mcp-servers       { manifest: { type:"remote", name, url, description } }
 GET  /mcp-servers/{name}/tools
 POST /agents                     { name, description, manifest: AgentSpec }
@@ -43,7 +43,29 @@ GET  /sessions/{id}/turns/{turnId}/events?limit=100
 POST /sessions/{id}/cancel
 ```
 
-Model name in AgentSpec = `"<provider>/<configured name>"`, e.g. `anthropic/peak-model`.
+Model name in AgentSpec = `"<provider>/<configured name>"`, e.g. `openai/peak-model`.
+
+## Model providers & fallback
+
+| Provider | TrueForge type | Config |
+|---|---|---|
+| **OpenAI** (primary) | `openai` | `OPENAI_API_KEY`, `OPENAI_MODEL` |
+| **Grok / xAI** (fallback) | `custom`, `base_url: https://api.x.ai/v1` (OpenAI-compatible) | `XAI_API_KEY`, `XAI_MODEL` |
+| mock (dev) | `custom`, `base_url: http://localhost:7300/v1` | none |
+
+Order: `MODEL_PROVIDERS=openai,xai` (providers with no key are skipped). Definitions: `agent/lib/providers.mjs`.
+
+**TrueForge has no built-in model fallback.** `agent/lib/trueforge-client.mjs` does it:
+
+1. Create the session on the first provider.
+2. If a turn ends with `state.status = "error"`, `PATCH /sessions/{id}` with the same spec but the next provider's model, then retry the turn chained to the failed one (`previous_turn_id`).
+3. If the failed turn was an approval resume, retry with a "continue" user message instead, since the approval can't be replayed.
+4. Once the last provider fails, return the error.
+
+Verified with a mock provider returning 503: the session switched and completed investigate → approval → execute on the fallback. With fake real keys, OpenAI returned 401 (endpoint OK) and xAI returned 400 (expected for an invalid key; confirm with a real key).
+
+⚠️ Not yet tested: a provider failing **after** an approved tool ran (step 3).
+⚠️ The retried turn repeats the user message in history. Harmless, but visible in the session UI.
 
 ### AgentSpec MCP entry
 
