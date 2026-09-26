@@ -1,26 +1,33 @@
 // The TrueForge seam.
 //
-// Every call the backend makes into P3's world goes through this interface, and
-// there are exactly two implementations:
+// Every call the backend makes into P3's world goes through this interface.
+// `real.js` wraps P3's own client (agent/lib/trueforge-client.mjs) rather than
+// hand-rolling HTTP, per contracts/backend-api.md §"Use the P3 client".
+// `fake.js` is a scripted Scenario A / B timeline with no runtime and no model.
 //
-//   real.js — HTTP against TrueForge at TRUEFORGE_URL
-//   fake.js — a scripted Scenario A / B timeline, no runtime and no API key
+// ## Why the interface looks like this
 //
-// This is the reason P4 was never actually blocked on the agent core. The
-// dashboard was built and demoed end to end against `fake`, and switching to the
-// real runtime is one env var. If TrueForge's event shapes turn out to differ
-// from what P3 documented, the blast radius is `real.js` + `mapper.js` — two
-// files, both owned by P4.
+// P3's client is *blocking*: `tf.start()` returns when the turn pauses for
+// approval or finishes, and `tf.approve()` returns after the agent has verified
+// recovery (60s+). That does not fit a request/response route, so:
 //
-// Interface (all methods may reject; callers must handle it):
+//   - `startInvestigation` and `submitDecision` fire a background task and
+//     return immediately. The HTTP handler responds right away.
+//   - `readState` is the read path the poller uses. It is cheap, non-blocking,
+//     and is the only thing the dashboard's 2s poll depends on.
 //
-//   createSession({ incidentId, description })          -> { sessionId }
-//   startTurn({ sessionId, input, previousTurnId })     -> { turnId }
-//   getTurnEvents({ sessionId, turnId })                -> Array<raw event>
-//   sendToolApproval({ sessionId, turnId, threadId,
-//                      toolCallId, status, reason })    -> { turnId }
-//   cancelSession({ sessionId })                        -> void
-//   sessionUrl(sessionId)                               -> string
+// `readState` reconstructs the `paused` handle from the event log rather than
+// holding it in memory, so a backend restart mid-incident can still approve.
+//
+// Interface:
+//
+//   ensureReady()                                        register providers + MCP
+//   createSession({incidentId, description})   -> {sessionId}
+//   startInvestigation({sessionId, description, onUpdate})   background
+//   submitDecision({sessionId, decision, reason, onUpdate}) background
+//   readState({sessionId})   -> {paused, diagnosis, resolution, pendingAction,
+//                                 events, turnDone, turnStatus}
+//   sessionUrl(sessionId)                        -> string
 
 import { config, resolveTrueforgeMode } from '../config.js';
 import { logger } from '../logger.js';
@@ -47,7 +54,37 @@ let adapter = null;
 export async function getAdapter() {
   if (adapter) return adapter;
   const mode = await resolveTrueforgeMode();
-  adapter = mode === 'real' ? createRealAdapter() : createFakeAdapter();
+
+  if (mode === 'real') {
+    try {
+      adapter = createRealAdapter();
+    } catch (err) {
+      // createRealAdapter throws when no model provider is configured —
+      // providersFromEnv() has nothing to fall back on. That is a
+      // configuration problem, not a reason for the whole backend to fail to
+      // boot: fall back to the scripted agent so the dashboard still runs, and
+      // say exactly what is missing.
+      logger.error('cannot use the real agent runtime, falling back to the scripted fake', {
+        err: err.message,
+        hint: 'set MODEL_PROVIDERS and the matching API key, or start agent/mock-model.mjs and use MODEL_PROVIDERS=mock',
+      });
+      adapter = createFakeAdapter();
+    }
+  } else {
+    adapter = createFakeAdapter();
+  }
+
+  if (adapter.mode === 'real') {
+    // Registering providers and MCP servers is P3's client's job and is
+    // idempotent, but a failure here is worth surfacing loudly: without a
+    // provider the agent cannot run at all.
+    try {
+      await adapter.ensureReady();
+    } catch (err) {
+      logger.error('TrueForge setup failed — incidents will not run', { err: err.message });
+    }
+  }
+
   logger.info(`trueforge adapter ready (mode=${adapter.mode})`, {
     url: config.trueforge.url,
     agent: config.trueforge.agentName,

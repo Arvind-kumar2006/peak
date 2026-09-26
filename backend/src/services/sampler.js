@@ -29,7 +29,7 @@ export function createSampler({ store, demoApp }) {
       // Keep sampling until the turn finishes, not until the status goes
       // terminal: a rejected incident still needs its after-numbers, otherwise
       // the chart just stops mid-spike and looks broken.
-      const open = incidents.find((i) => i.last_event_at && !i.turn_done);
+      const open = incidents.find((i) => i.session_id && !i.turn_done);
       if (!open) return;
 
       const metrics = await demoApp.metrics();

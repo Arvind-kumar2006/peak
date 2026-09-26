@@ -1,113 +1,109 @@
 // Status derivation. This is the file that decides what the dashboard says is
 // happening, so it gets the most test coverage.
 //
-// The tests are written as "here is a TrueForge event list, here is what the
-// incident status must be" — because that is the actual contract with P3, and
-// because it means these tests keep their value after the adapter is swapped
-// from the fake to the real runtime.
+// The tests are written as "here is the agent's state, here is what the incident
+// status must be" — because that is the actual contract with P3, and because it
+// means these tests keep their value after the adapter is swapped from the
+// scripted fake to the real runtime.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deriveStatus, detectStall, isActive, STATUS } from '../src/domain/status.js';
 
-const report = (phase) => ({ phase, summary: 's', rootCause: { category: 'code' }, evidence: [] });
+const diagnosis = { summary: 's', rootCause: { category: 'code' } };
+const resolution = (verdict) => ({ verdict, actionTaken: 'none', windowSec: 60 });
 
-/** A finished turn in the shape contracts/trueforge.md documents. */
-const turnDone = (status, output) => ({
-  type: 'turn.done',
-  state: {
-    status,
-    ...(output ? { output: { type: 'model.message', content: JSON.stringify(output), thread_id: 'main' } } : {}),
-    ...(status === 'error' ? { message: 'boom' } : {}),
-  },
-});
-
-const approvalRequired = (callId = 'call_1', sourceId = 'msg_1') => ({
-  type: 'tool.approval_required',
-  thread_id: 'main',
-  tool_calls: [{ id: callId, source_event_id: sourceId }],
-});
+// The shape contracts/backend-api.md describes: a paused turn, or a finished one.
+const paused = { kind: 'approval', turnId: 't1', threadId: 'main', toolCalls: [{ id: 'c1' }] };
 
 test('a fresh incident is investigating', () => {
-  const { status } = deriveStatus({ events: [{ type: 'model.message', content: 'starting' }] });
-  assert.equal(status, STATUS.INVESTIGATING);
+  assert.equal(deriveStatus({}).status, STATUS.INVESTIGATING);
 });
 
-test('no events at all is still investigating, not an error', () => {
-  // The turn is created a moment before the first event lands. Defaulting to
-  // `error` here would flash a red badge on every incident.
-  assert.equal(deriveStatus({ events: [] }).status, STATUS.INVESTIGATING);
+test('a diagnosis without a gate means it is still working, not done', () => {
+  // The agent submits its diagnosis *before* requesting approval. Reading a
+  // diagnosis as "finished" would park every incident in the wrong state.
+  assert.equal(deriveStatus({ diagnosis }).status, STATUS.INVESTIGATING);
 });
 
 test('the approval gate produces awaiting_approval', () => {
-  const { status } = deriveStatus({
-    events: [{ type: 'model.message' }, approvalRequired()],
-  });
-  assert.equal(status, STATUS.AWAITING_APPROVAL);
+  assert.equal(deriveStatus({ diagnosis, paused }).status, STATUS.AWAITING_APPROVAL);
 });
 
 test('approving moves to executing', () => {
-  const { status } = deriveStatus({ events: [approvalRequired()], decision: 'allow' });
-  assert.equal(status, STATUS.EXECUTING);
+  assert.equal(deriveStatus({ diagnosis, paused, decision: 'allow' }).status, STATUS.EXECUTING);
 });
 
 test('rejecting is rejected immediately, without waiting for the agent', () => {
-  // The action will not run the moment the human says no. Waiting for the
-  // agent's wrap-up turn to agree would leave the UI showing "executing" for a
-  // fix that is never going to execute.
-  const { status } = deriveStatus({ events: [approvalRequired()], decision: 'deny' });
-  assert.equal(status, STATUS.REJECTED);
+  // The action will not run the moment a human says no. Waiting for the wrap-up
+  // turn to agree would show "executing" for a fix that never executes.
+  assert.equal(deriveStatus({ diagnosis, paused, decision: 'deny' }).status, STATUS.REJECTED);
 });
 
-test('a clean turn with phase=resolved is resolved', () => {
-  const { status } = deriveStatus({ events: [turnDone('done', report('resolved'))] });
-  assert.equal(status, STATUS.RESOLVED);
+test('every resolution verdict maps to its status', () => {
+  for (const verdict of ['resolved', 'mitigated', 'not_resolved', 'rejected']) {
+    assert.equal(deriveStatus({ diagnosis, decision: 'allow', resolution: resolution(verdict) }).status, verdict);
+  }
 });
 
-test('phase=mitigated and phase=not_resolved map through', () => {
-  assert.equal(deriveStatus({ events: [turnDone('done', report('mitigated'))] }).status, STATUS.MITIGATED);
-  assert.equal(deriveStatus({ events: [turnDone('done', report('not_resolved'))] }).status, STATUS.NOT_RESOLVED);
+test('the verdict beats the recorded decision', () => {
+  // A submitted Resolution is the agent's own structured judgement and is the
+  // last word. Otherwise a rejection could never be reported as `rejected`.
+  assert.equal(deriveStatus({ decision: 'deny', resolution: resolution('rejected') }).status, STATUS.REJECTED);
 });
 
-test('an errored turn is error, even if a decision was recorded', () => {
-  // If the turn that handled the approval blew up, "error" is the truth worth
-  // showing. Reporting "rejected" would hide a real bug.
-  const { status } = deriveStatus({ events: [turnDone('error')], decision: 'deny' });
-  assert.equal(status, STATUS.ERROR);
+test('a finished turn with no resolution is an error, not a success', () => {
+  // contracts/backend-api.md is explicit. Reading this as anything else is
+  // exactly how an agent walks away from a broken service and the dashboard
+  // calls it fine.
+  const result = deriveStatus({ diagnosis, turnDone: true, turnStatus: 'done' });
+  assert.equal(result.status, STATUS.ERROR);
+  assert.match(result.reason, /without submitting a resolution/);
+});
+
+test('a resolution rescues a finished turn', () => {
+  assert.equal(
+    deriveStatus({ diagnosis, resolution: resolution('resolved'), turnDone: true, turnStatus: 'done' }).status,
+    STATUS.RESOLVED,
+  );
+});
+
+test('an errored turn is error even if a decision was recorded', () => {
+  // If the turn that handled the approval blew up, "error" is the truth on
+  // stage. Reporting "rejected" would hide a real bug.
+  assert.equal(deriveStatus({ turnStatus: 'error', decision: 'deny' }).status, STATUS.ERROR);
+});
+
+test('a background task failure is surfaced as error', () => {
+  const result = deriveStatus({ error: 'connection refused' });
+  assert.equal(result.status, STATUS.ERROR);
+  assert.match(result.reason, /connection refused/);
 });
 
 test('a cancelled turn is cancelled', () => {
-  assert.equal(deriveStatus({ events: [turnDone('cancelled')] }).status, STATUS.CANCELLED);
-});
-
-test('a done turn with an unparseable report degrades to diagnosed, not resolved', () => {
-  // Reporting "resolved" because a turn finished would be exactly the failure
-  // mode this project exists to argue against.
-  const { status, report: parsed } = deriveStatus({ events: [turnDone('done', 'I think it is fine now')] });
-  assert.equal(status, STATUS.DIAGNOSED);
-  assert.equal(parsed, null);
-});
-
-test('turn.done is found even when it is not the last event', () => {
-  // TrueForge may append bookkeeping events after turn.done.
-  const events = [turnDone('done', report('resolved')), { type: 'session.idle' }];
-  assert.equal(deriveStatus({ events }).status, STATUS.RESOLVED);
-});
-
-test('running turn after approval stays executing until the turn finishes', () => {
-  const events = [approvalRequired(), { type: 'model.message', content: 'rolling back...' }];
-  assert.equal(deriveStatus({ events, decision: 'allow' }).status, STATUS.EXECUTING);
+  assert.equal(deriveStatus({ turnStatus: 'cancelled' }).status, STATUS.CANCELLED);
 });
 
 test('the full happy path end to end', () => {
-  const investigation = [{ type: 'model.message' }, approvalRequired()];
-  assert.equal(deriveStatus({ events: investigation }).status, STATUS.AWAITING_APPROVAL);
+  assert.equal(deriveStatus({}).status, STATUS.INVESTIGATING);
+  assert.equal(deriveStatus({ diagnosis }).status, STATUS.INVESTIGATING);
+  assert.equal(deriveStatus({ diagnosis, paused }).status, STATUS.AWAITING_APPROVAL);
+  assert.equal(deriveStatus({ diagnosis, paused, decision: 'allow' }).status, STATUS.EXECUTING);
+  assert.equal(
+    deriveStatus({ diagnosis, paused, decision: 'allow', resolution: resolution('resolved'), turnDone: true, turnStatus: 'done' })
+      .status,
+    STATUS.RESOLVED,
+  );
+});
 
-  const executing = [...investigation, { type: 'tool.result' }];
-  assert.equal(deriveStatus({ events: executing, decision: 'allow' }).status, STATUS.EXECUTING);
-
-  const finished = [...executing, turnDone('done', report('resolved'))];
-  assert.equal(deriveStatus({ events: finished, decision: 'allow' }).status, STATUS.RESOLVED);
+test('the full reject path end to end', () => {
+  assert.equal(deriveStatus({ diagnosis, paused }).status, STATUS.AWAITING_APPROVAL);
+  assert.equal(deriveStatus({ diagnosis, paused, decision: 'deny' }).status, STATUS.REJECTED);
+  assert.equal(
+    deriveStatus({ diagnosis, paused, decision: 'deny', resolution: resolution('rejected'), turnDone: true, turnStatus: 'done' })
+      .status,
+    STATUS.REJECTED,
+  );
 });
 
 test('terminal statuses are terminal', () => {

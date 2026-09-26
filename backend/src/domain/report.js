@@ -1,147 +1,121 @@
-// Report parsing. The agent's final answer is JSON (AgentSpec
-// response_format: json_schema over contracts/incident-report.schema.json), but
-// it arrives as model *text*, so it may be raw JSON, fenced, or wrapped in a
-// sentence. This module is deliberately forgiving.
+// Diagnosis / Resolution parsing.
 //
-// Rule that matters most: **never throw**. A malformed report must degrade the
-// dashboard to "couldn't parse this", never 500 the endpoint the judge is
-// watching. Every failure path returns null.
+// These used to arrive as JSON in the agent's final message. They no longer do:
+// per contracts/backend-api.md, the agent submits them as the *arguments* to
+// `submit_diagnosis` and `submit_resolution` on report-mcp, and the backend
+// reads them with `getReports()`. That is a better design — a submitted report
+// is a recorded, timestamped act rather than something scraped out of prose —
+// but it means the parser's job changed from "find JSON in text" to "normalise
+// a tool call's arguments".
+//
+// The leniency stays. `function.arguments` is a JSON *string* in MCP, and a
+// truncated or absent one must degrade the dashboard, never 500 the endpoint it
+// polls every 2 seconds.
+//
+// Rule that matters most: **never throw, and never invent a value.** A missing
+// confidence stays null and the UI says "unknown". Fabricating a number on stage
+// is exactly the failure mode this project argues against.
 
 import { logger } from '../logger.js';
 
-/** Statuses the report phase can map onto. 1:1 with the schema enum. */
-const PHASE_TO_STATUS = {
-  diagnosed: 'diagnosed',
+/** contracts/incident-report.schema.json → Resolution.verdict. */
+const VERDICT_TO_STATUS = {
   resolved: 'resolved',
   mitigated: 'mitigated',
   not_resolved: 'not_resolved',
   rejected: 'rejected',
 };
 
-export function phaseToStatus(phase) {
-  return PHASE_TO_STATUS[phase] ?? null;
+export const VERDICTS = Object.keys(VERDICT_TO_STATUS);
+
+export function verdictToStatus(verdict) {
+  return VERDICT_TO_STATUS[verdict] ?? null;
 }
 
-/** Unwrap whatever TrueForge put in `turn.done.state.output` down to text. */
-function outputToText(output) {
-  if (output == null) return null;
-  if (typeof output === 'string') return output;
-  if (typeof output === 'object') {
-    // Verified shape: { type: "model.message", content: "..." }
-    if (typeof output.content === 'string') return output.content;
-    // Tolerate a content-parts array rather than a plain string.
-    if (Array.isArray(output.content)) {
-      return output.content
-        .map((p) => (typeof p === 'string' ? p : p?.text ?? ''))
-        .join('');
-    }
-    if (typeof output.text === 'string') return output.text;
-  }
-  return null;
-}
+/** contracts/incident-report.schema.json → Diagnosis.rootCause.category. */
+const CATEGORIES = new Set(['code', 'infra', 'unknown']);
 
-/**
- * Pull the first balanced {...} run out of a string. Used when the model
- * wrapped its JSON in prose ("Here is the report:\n{...}").
- */
-function firstJsonObject(text) {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (ch === '"') inString = !inString;
-    if (inString) continue;
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) return text.slice(start, i + 1);
-    }
-  }
-  return null;
-}
-
-function tryParse(candidate) {
-  if (!candidate) return null;
+/** MCP sends tool arguments as a JSON string. Accept either. */
+function toObject(raw) {
+  if (raw == null) return null;
+  if (Array.isArray(raw)) return null; // typeof [] === 'object'; not a report
+  if (typeof raw === 'object') return raw;
+  if (typeof raw !== 'string') return null;
   try {
-    const value = JSON.parse(candidate);
-    // Guard against parsing an unrelated JSON blob that happens to be in the
-    // text. A real report always has a phase and a rootCause.
-    if (value && typeof value === 'object' && (value.phase || value.rootCause)) {
-      return value;
-    }
-    return null;
+    const parsed = JSON.parse(raw);
+    // Same trap one level down: JSON.parse('[]') is an object.
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
+const str = (v) => (typeof v === 'string' && v.trim() ? v : null);
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
 /**
- * Best-effort extraction of an IncidentReport from a finished turn.
- * Returns null when nothing report-shaped can be found.
+ * Diagnosis — available at `awaiting_approval`, and the thing the human is
+ * actually approving.
  */
-export function extractReport(output) {
-  const text = outputToText(output);
-  if (!text) return null;
-
-  // 1. Raw JSON, the happy path.
-  const direct = tryParse(text.trim());
-  if (direct) return normalise(direct);
-
-  // 2. Fenced block, the common LLM habit.
-  const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
-  if (fence) {
-    const parsed = tryParse(fence[1].trim());
-    if (parsed) return normalise(parsed);
+export function extractDiagnosis(raw) {
+  const d = toObject(raw);
+  if (!d) {
+    if (raw != null) logger.warn('submit_diagnosis args were not readable JSON');
+    return null;
   }
-
-  // 3. First balanced object anywhere in the text.
-  const embedded = tryParse(firstJsonObject(text));
-  if (embedded) return normalise(embedded);
-
-  logger.warn('could not parse an IncidentReport from the final message', {
-    preview: text.slice(0, 160),
-  });
-  return null;
-}
-
-/**
- * Fill in optional fields the schema allows to be missing so the dashboard
- * never renders `undefined`. We do NOT invent values — a missing confidence
- * stays null and the UI shows "unknown", because a fabricated 0.9 on stage is
- * exactly the kind of lie this project's whole pitch is arguing against.
- */
-function normalise(report) {
-  const rootCause = report.rootCause ?? {};
-  const proposedFix = report.proposedFix ?? {};
+  const rootCause = d.rootCause ?? {};
+  const proposedFix = d.proposedFix ?? {};
+  const category = str(rootCause.category);
   return {
-    phase: report.phase ?? null,
-    summary: report.summary ?? null,
+    summary: str(d.summary),
     rootCause: {
-      category: rootCause.category ?? 'unknown',
-      description: rootCause.description ?? null,
-      confidence: typeof rootCause.confidence === 'number' ? rootCause.confidence : null,
-      commitSha: rootCause.commitSha ?? null,
+      // Anything outside the schema enum degrades to `unknown` rather than
+      // reaching the UI, where the category drives the code-vs-infra colour.
+      category: CATEGORIES.has(category) ? category : 'unknown',
+      description: str(rootCause.description),
+      confidence: num(rootCause.confidence),
+      commitSha: str(rootCause.commitSha),
     },
-    evidence: Array.isArray(report.evidence) ? report.evidence : [],
+    evidence: Array.isArray(d.evidence) ? d.evidence : [],
+    // New in the current schema, and the most persuasive field on the card:
+    // what the agent considered and threw away.
+    ruledOut: Array.isArray(d.ruledOut) ? d.ruledOut.filter((x) => typeof x === 'string') : [],
     proposedFix: {
-      action: proposedFix.action ?? 'none',
+      action: str(proposedFix.action) ?? 'none',
       args: proposedFix.args && typeof proposedFix.args === 'object' ? proposedFix.args : {},
-      reasoning: proposedFix.reasoning ?? null,
-      diff: proposedFix.diff ?? null,
+      reasoning: str(proposedFix.reasoning),
+      expectedOutcome: str(proposedFix.expectedOutcome),
     },
-    verification: report.verification ?? null,
+    // Baseline metrics captured before the action. Pairs with Resolution.after
+    // to give the before/after the agent itself measured.
+    before: d.before && typeof d.before === 'object' ? d.before : null,
   };
 }
 
-export const REPORT_PHASES = Object.keys(PHASE_TO_STATUS);
+/**
+ * Resolution — available at the end. Its `verdict` is the only thing that sets
+ * an incident's terminal status; nothing in this codebase decides that.
+ */
+export function extractResolution(raw) {
+  const r = toObject(raw);
+  if (!r) {
+    if (raw != null) logger.warn('submit_resolution args were not readable JSON');
+    return null;
+  }
+  return {
+    verdict: str(r.verdict),
+    actionTaken: str(r.actionTaken) ?? 'none',
+    windowSec: num(r.windowSec),
+    before: r.before && typeof r.before === 'object' ? r.before : null,
+    after: r.after && typeof r.after === 'object' ? r.after : null,
+    reasoning: str(r.reasoning),
+    // New in the current schema. Aims the "and now what" part of the pitch at
+    // a real next step instead of trailing off.
+    followUp: str(r.followUp),
+  };
+}
+
+/** True once the agent has submitted a resolution we could read. */
+export function hasResolution(resolution) {
+  return Boolean(resolution && verdictToStatus(resolution.verdict));
+}

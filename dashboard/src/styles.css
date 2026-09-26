@@ -277,6 +277,33 @@ textarea:focus, .btn:focus-visible { outline: 2px solid var(--accent); outline-o
 .evidence-meta .tool { color: var(--accent); background: #0d1526; padding: 1px 7px; border-radius: 5px; }
 .observation { font-family: var(--mono); font-size: 0.78rem; color: var(--text-dim); }
 
+/* ---------- ruled out ----------
+   The field that answers "how do I know this isn't a guess". It gets its own
+   block, visually recessed from the evidence above it, because it is what the
+   agent discarded rather than what it found. */
+.ruledout {
+  margin-top: 14px; padding-top: 13px;
+  border-top: 1px dashed var(--border);
+}
+.ruledout h3 {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-dim); margin-bottom: 8px;
+}
+.ruledout ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.ruledout li { font-size: 0.87rem; color: var(--text-dim); }
+.ruledout li::marker { color: var(--neutral); }
+
+/* ---------- resolution ---------- */
+.card-resolution { border-color: #24405c; }
+.measured { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+  font-family: var(--mono); font-size: 0.76rem;
+  background: var(--bg-sunken); border: 1px solid var(--border);
+  border-radius: 6px; padding: 2px 8px; color: var(--text-dim);
+}
+.chip s { opacity: 0.6; }
+.chip strong { color: var(--good); }
+
 /* ---------- chart ---------- */
 .metric-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
 .tab {

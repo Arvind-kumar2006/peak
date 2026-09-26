@@ -71,6 +71,11 @@ export function IncidentFeed({ incidents, selectedId, onSelect, loading }) {
                 {incident.scenario && <code>{incident.scenario}</code>}
                 {incident.pendingTool && <code className="pending">{incident.pendingTool}</code>}
                 {incident.rootCauseCategory && <code>{incident.rootCauseCategory}</code>}
+                {/* A rejected incident is terminal, but the agent's turn is still
+                    running and owes us a Resolution — say so rather than looking frozen. */}
+                {!incident.turnDone && incident.status === 'rejected' && (
+                  <code className="pending">wrapping up</code>
+                )}
               </div>
             </button>
           </li>

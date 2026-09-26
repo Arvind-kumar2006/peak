@@ -6,7 +6,7 @@
 // raises.
 
 import { StatusBadge } from './StatusBadge.jsx';
-import { RootCauseCard, EvidenceList } from './Diagnosis.jsx';
+import { DiagnosisCard, EvidenceList, ResolutionCard } from './Diagnosis.jsx';
 import { PendingActionCard } from './PendingActionCard.jsx';
 import { MetricsChart } from './MetricsChart.jsx';
 
@@ -49,7 +49,7 @@ export function IncidentDetail({ incident, error, onDecided }) {
             </a>
           )}
         </div>
-        <h1 className="detail-title">{incident.report?.summary || headlineFor(incident)}</h1>
+        <h1 className="detail-title">{incident.diagnosis?.summary || headlineFor(incident)}</h1>
         {incident.error && <div className="alert alert-error">{incident.error}</div>}
         {incident.stalled && (
           <div className="alert alert-warn">
@@ -60,16 +60,17 @@ export function IncidentDetail({ incident, error, onDecided }) {
       </header>
 
       {/* Order matters: the approval card sits directly under the diagnosis it
-          justifies, and above the metrics that prove it worked. */}
+          justifies, and the resolution below the chart that corroborates it. */}
       <PendingActionCard incident={incident} onDecided={onDecided} />
 
-      <RootCauseCard report={incident.report} />
-      <EvidenceList evidence={incident.report?.evidence} />
+      <DiagnosisCard diagnosis={incident.diagnosis} />
+      <EvidenceList evidence={incident.diagnosis?.evidence} />
       <MetricsChart
         samples={incident.metrics ?? []}
         decisionAt={decision?.at}
-        report={incident.report}
+        resolution={incident.resolution}
       />
+      <ResolutionCard resolution={incident.resolution} />
       <Timeline events={incident.timeline ?? []} />
     </main>
   );
@@ -97,7 +98,11 @@ function DecisionBadge({ decision }) {
 function headlineFor(incident) {
   switch (incident.status) {
     case 'investigating':
-      return 'Investigating…';
+      // The agent submits its Diagnosis before asking to act, so reaching here
+      // with a diagnosis present means it is still working, not stalled.
+      return incident.diagnosis
+        ? 'Diagnosis received — the agent is still working'
+        : 'Investigating…';
     case 'awaiting_approval':
       return 'Diagnosis complete — waiting for your approval';
     case 'executing':
@@ -139,11 +144,11 @@ function describe(event) {
   const p = event.payload ?? {};
   switch (event.type) {
     case 'model.message':
-      if (p.tool_calls?.length) return p.tool_calls.map((c) => c.function?.name ?? c.name).join(', ');
+      if (p.tool_calls?.length) return p.tool_calls.map((c) => c.function?.name ?? c.name).filter(Boolean).join(', ');
       if (p.content) return String(p.content).slice(0, 120);
       return '';
-    case 'tool.result':
-      return `${p.name ?? ''} ${String(p.content ?? '').slice(0, 100)}`.trim();
+    case 'tool.response':
+      return `${p.name ?? 'tool'} ${String(p.content ?? '').slice(0, 90)}`.trim();
     case 'tool.approval_required':
       return `waiting on ${p.tool_calls?.length ?? 0} tool call(s)`;
     case 'turn.done':

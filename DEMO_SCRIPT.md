@@ -14,18 +14,22 @@ not the dev server.
 - [ ] `scripts/start-trueforge.sh` running, UI at `:8790`
 - [ ] MCP connectors up (or `MOCK=1`)
 - [ ] `backend` up, `GET /api/health` shows `agent.mode: real`
+- [ ] `report-mcp` up on **:7104** — the agent submits its diagnosis and
+      resolution there, so without it the agent cannot report
 - [ ] `dashboard` built and served via `npm run preview`
 - [ ] **Reset the demo**, then confirm `/health` is `ok` and error rate < 1%
 - [ ] Backup video playing in a second window, ready to alt-tab
 - [ ] Terminal font bumped up. Nobody should be able to see your shell history.
 
-**Know these three numbers cold** — they are the whole demo:
+**Know these numbers cold** — they are the whole demo:
 
 | | |
 |---|---|
 | Pool | **10 max, 10 in use, 34 waiting** |
 | Error rate | **~42%** |
+| p95 latency | **~3800ms** |
 | Bad commit | **`a80e0f0` — "perf: reuse client for order lookup"** |
+| Good commit | **`5c1d0ab`** — what it rolls back to |
 
 ---
 
@@ -62,9 +66,9 @@ not the dev server.
 > "Every one of those is a real tool call. This is the full reasoning trail,
 > kept by the runtime — not a summary written afterwards."
 
-### 1:15 — The diagnosis (45s)
+### 1:15 — The diagnosis (55s)
 
-*The card flips to **Awaiting approval**. Diagnosis, evidence, then the approval card.*
+*The card flips to **Awaiting approval**. Diagnosis, then evidence, then the approval card.*
 
 > "It says: code-level. Commit `a80e0f0`. Confidence 93%."
 
@@ -73,6 +77,12 @@ not the dev server.
 > "Four pieces of evidence, each with the tool that produced it. The pool is
 > 10/10 with 34 waiters. A deploy 12 minutes ago. 187 timeout errors tagged with
 > that exact release."
+
+*Point at **Ruled out**.*
+
+> "And here's the part I like most — what it *discarded*. Not traffic: flat at
+> 238 rpm. Not locks: nothing waiting. Not a database fault: the slow-query log
+> is clean. It tells you what it eliminated, not just what it kept."
 
 > "It proposes **one** action — roll back to the previous deploy — and it has not
 > run. The runtime stopped it."
@@ -89,13 +99,19 @@ not the dev server.
 > "Now it runs, and then it has to prove it worked. It doesn't get to declare
 > victory."
 
-### 2:30 — The verification (30s)
+### 2:30 — The verification (35s)
 
 *Status goes Executing → Resolved. The chart's marker shows where approval happened.*
 
 > "Error rate before: 42%. After: 0.2%. The vertical line is the approval.
 > Everything to the right of it is recovery, measured — not asserted. The agent
 > watched a 60-second window before it was allowed to say 'resolved'."
+
+*Point at the Resolution panel.*
+
+> "Those before/after numbers are the agent's own, submitted at the end. And note
+> it ends with a follow-up: add the missing `client.release()` and open a PR. It
+> doesn't just patch the symptom, it tells you what stops it happening again."
 
 ### 3:00 — The honest case (30s)
 

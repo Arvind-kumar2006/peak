@@ -5,14 +5,15 @@
 //
 //   1. Auditable. When a judge asks "how do you know it isn't just the model
 //      claiming success?", the answer is a replay of the actual TrueForge
-//      events. We never write "resolved" ourselves.
-//   2. Idempotent. Polling the same turn twice cannot corrupt state, so a
-//      dropped HTTP response or a double-clicked Approve is harmless.
+//      events plus the agent's own submitted Resolution. We never write
+//      "resolved" ourselves.
+//   2. Idempotent. Polling the same session twice cannot corrupt state, so a
+//      dropped response or a double-clicked Approve is harmless.
 //
-// Pure functions only. No database, no fetch, no clock except what's passed in.
-// That is what makes this testable today, before the agent exists.
+// Pure function. No database, no fetch, no clock except what's passed in. That
+// is what makes this testable before the agent core exists.
 
-import { extractReport, phaseToStatus } from './report.js';
+import { verdictToStatus } from './report.js';
 
 export const STATUS = {
   INVESTIGATING: 'investigating',
@@ -28,11 +29,8 @@ export const STATUS = {
 };
 
 /**
- * Statuses we will never move out of. The poller and sampler stop working an
- * incident once it lands here.
- *
- * `diagnosed` counts as terminal: the agent finished and proposed a fix but
- * took no action. Nothing further will arrive on its own.
+ * Statuses we will never move out of. The poller and sampler stop once the
+ * agent's turn has finished anyway; this is about not re-deriving forever.
  */
 export const TERMINAL_STATUSES = new Set([
   STATUS.DIAGNOSED,
@@ -44,100 +42,90 @@ export const TERMINAL_STATUSES = new Set([
   STATUS.CANCELLED,
 ]);
 
-/** Statuses where the human still has a button to press. */
-export const AWAITING_DECISION = new Set([STATUS.AWAITING_APPROVAL]);
-
-const last = (arr) => (arr.length ? arr[arr.length - 1] : null);
-
-const eventsOfType = (events, type) => events.filter((e) => e?.type === type);
-
 /**
- * The most recent turn.done in the event list.
- *
- * `turn.done` is not guaranteed to be the last event — TrueForge may append
- * bookkeeping events after it — so we scan rather than take the tail.
- */
-function findTurnDone(events) {
-  return last(eventsOfType(events, 'turn.done'));
-}
-
-/**
- * Decide an incident's status from the current turn's events.
+ * Decide an incident's status.
  *
  * @param {object}  input
- * @param {Array}   input.events   TrueForge events for the current turn, in order.
- * @param {string}  input.decision 'allow' | 'deny' | null — the human's choice, if any.
- * @returns {{ status: string, report: object|null, reason: string }}
+ * @param {object}  input.paused      non-null while the runtime holds a tool call for approval
+ * @param {object}  input.diagnosis   the agent's submitted Diagnosis, or null
+ * @param {object}  input.resolution  the agent's submitted Resolution, or null
+ * @param {boolean} input.turnDone    the current turn reported turn.done
+ * @param {string}  input.turnStatus  done | error | cancelled | running | null
+ * @param {string}  input.decision    'allow' | 'deny' | null — the human's choice
+ * @param {string}  input.error       message from a failed background task, if any
  */
-export function deriveStatus({ events = [], decision = null } = {}) {
-  const done = findTurnDone(events);
-  const state = done?.state ?? null;
-  const turnStatus = state?.status ?? null;
+export function deriveStatus({
+  paused = null,
+  diagnosis = null,
+  resolution = null,
+  turnDone = false,
+  turnStatus = null,
+  decision = null,
+  error = null,
+} = {}) {
+  // 1. A turn that ended in an error, or a background task that failed, is the
+  //    most informative thing we know. Checked first so a failure during the
+  //    deny path reads as "error" rather than being hidden behind "rejected".
+  if (error) return { status: STATUS.ERROR, reason: error };
+  if (turnStatus === 'error') return { status: STATUS.ERROR, reason: 'the agent turn failed' };
+  if (turnStatus === 'cancelled') return { status: STATUS.CANCELLED, reason: 'the turn was cancelled' };
 
-  // 1. A turn that ended in an error is the most informative thing we know.
-  //    Checked before the decision because if the *deny* turn blew up, "error"
-  //    is the truth on stage and "rejected" would hide a real bug.
-  if (turnStatus === 'error') {
-    return {
-      status: STATUS.ERROR,
-      report: extractReport(state?.output),
-      reason: 'turn reported an error',
-    };
+  // 2. The agent submitted a resolution. Its verdict is the answer — the
+  //    agent's own structured judgement, not ours.
+  const verdictStatus = verdictToStatus(resolution?.verdict);
+  if (verdictStatus) {
+    return { status: verdictStatus, reason: `resolution verdict: ${resolution.verdict}` };
   }
 
-  // 2. The human said no. The proposed action will not run, so "rejected" is
-  //    already true the moment we record the decision — we don't wait for the
-  //    agent's wrap-up turn to agree. Stable, and it can't flap.
+  // 3. The human said no. True the moment we record the decision; we don't wait
+  //    for the agent's wrap-up to agree, so the badge can't sit on "executing"
+  //    for a fix that is never going to run.
   if (decision === 'deny') {
-    return { status: STATUS.REJECTED, report: extractReport(state?.output), reason: 'operator rejected the action' };
+    return { status: STATUS.REJECTED, reason: 'operator rejected the action' };
   }
 
-  // 3. Operator or agent cancelled the turn.
-  if (turnStatus === 'cancelled') {
-    return { status: STATUS.CANCELLED, report: extractReport(state?.output), reason: 'turn was cancelled' };
+  // 4. The turn finished but the agent never submitted a resolution.
+  //    contracts/backend-api.md is explicit: that is an error, not a success.
+  //    Reading it as anything else is how an agent gets to walk away from a
+  //    broken service and have the dashboard call it fine.
+  if (turnDone) {
+    return { status: STATUS.ERROR, reason: 'the agent finished without submitting a resolution' };
   }
 
-  // 4. Turn finished cleanly. The report's phase is the answer — this is the
-  //    agent's structured verdict, not our opinion.
-  if (turnStatus === 'done') {
-    const report = extractReport(state?.output);
-    const mapped = report ? phaseToStatus(report.phase) : null;
-    if (mapped) {
-      return { status: mapped, report, reason: `report phase: ${report.phase}` };
-    }
-    // Finished but no parseable report. Say "diagnosed" rather than inventing a
-    // verdict — the truth is "it stopped and we couldn't read it", and the
-    // dashboard shows the raw output so a human can judge.
-    return { status: STATUS.DIAGNOSED, report: null, reason: 'turn done but no parseable report' };
-  }
-
-  // 5. Approved. The whitelisted tool is running (or about to).
+  // 5. Approved. The whitelisted tool is running, or the agent is verifying.
   if (decision === 'allow') {
-    return { status: STATUS.EXECUTING, report: extractReport(state?.output), reason: 'action approved, executing' };
+    return { status: STATUS.EXECUTING, reason: 'action approved, executing' };
   }
 
   // 6. The runtime paused on the approval gate. This is the moment the whole
-  //    project exists for, so it gets its own status and a pendingAction.
-  if (eventsOfType(events, 'tool.approval_required').length > 0) {
-    return { status: STATUS.AWAITING_APPROVAL, report: null, reason: 'waiting on a human decision' };
+  //    project exists for, so it gets its own status.
+  if (paused) {
+    return { status: STATUS.AWAITING_APPROVAL, reason: 'waiting on a human decision' };
   }
 
-  // 7. Turn running, nothing proposed yet.
-  return { status: STATUS.INVESTIGATING, report: null, reason: 'agent is investigating' };
+  // 7. Turn running, nothing proposed yet. Note the agent submits its diagnosis
+  //    *before* requesting approval, so a diagnosis without a gate means it is
+  //    still working — not that it is done.
+  return { status: STATUS.INVESTIGATING, reason: 'agent is investigating' };
 }
 
 /**
- * A live turn that has produced no new events for a while is worth *flagging*
- * but must not be *relabelled* — overwriting `investigating` with `stalled`
- * would destroy the real status and, worse, could make a paused-for-approval
- * incident look merely slow. So this returns a flag, not a status.
+ * A turn that has produced nothing new for a while is worth *flagging* but must
+ * not be *relabelled* — overwriting `investigating` with `stalled` would destroy
+ * the real status, and could make a paused-for-approval incident look merely
+ * slow. So this returns a flag, not a status.
  */
 export function detectStall({ lastEventAt, now = Date.now(), thresholdMs = 90_000 } = {}) {
   if (!lastEventAt) return false;
   return now - new Date(lastEventAt).getTime() > thresholdMs;
 }
 
-/** Statuses the dashboard should keep polling / sampling for. */
 export function isActive(status) {
   return !TERMINAL_STATUSES.has(status);
 }
+
+/** The status a fresh incident starts in. */
+export const INITIAL_STATUS = STATUS.INVESTIGATING;
+
+/** Re-exported so callers don't need two imports for one decision. */
+export { verdictToStatus };

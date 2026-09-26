@@ -1,8 +1,12 @@
 // Incident row -> the API shape in contracts/backend-api.md.
 //
-// The contract lists 7 fields. We emit those plus a few additive ones
-// (updatedAt, decision, error, lastEventAt, stalled) that the dashboard needs
-// and that cost nothing to include. Additive-only, so the contract still holds.
+// The contract splits the agent's output in two: `diagnosis` is available at
+// `awaiting_approval` (it is what the human is approving), and `resolution`
+// arrives at the end (it carries the verdict). An earlier revision of the
+// contract had a single `report`; P3's current schema is the two-phase one, so
+// this follows it.
+//
+// Everything here beyond those fields is additive, so the contract still holds.
 
 import { randomUUID } from 'node:crypto';
 
@@ -12,7 +16,7 @@ export function newIncidentId() {
   return `inc_${time}${randomUUID().replace(/-/g, '').slice(0, 10)}`;
 }
 
-/** Fields safe to return in the list endpoint (no report blob, no timeline). */
+/** Fields safe to return in the list endpoint (no report blobs, no timeline). */
 export function toSummary(row) {
   return {
     id: row.id,
@@ -20,17 +24,17 @@ export function toSummary(row) {
     scenario: row.scenario ?? null,
     status: row.status,
     decision: row.decision ?? null,
-    // The feed shows one line of the diagnosis. Reading report.summary off the
-    // list endpoint is what makes the left column useful at a glance.
-    summary: row.report?.summary ?? null,
-    rootCauseCategory: row.report?.rootCause?.category ?? null,
-    confidence: row.report?.rootCause?.confidence ?? null,
+    // The feed shows one line. Before the diagnosis lands, fall back to the
+    // scenario so a row is never blank.
+    summary: row.diagnosis?.summary ?? row.resolution?.reasoning ?? null,
+    rootCauseCategory: row.diagnosis?.rootCause?.category ?? null,
+    confidence: row.diagnosis?.rootCause?.confidence ?? null,
     pendingTool: row.pending_action?.tool ?? null,
     trueforgeUrl: row.trueforge_url ?? null,
     error: row.error ?? null,
     stalled: Boolean(row.stalled),
-    // Lets the UI show "wrapping up" on a rejected incident instead of
-    // freezing the timeline before the agent's explanation arrives.
+    // Lets the UI say "wrapping up" on a rejected incident instead of freezing
+    // the timeline before the agent's explanation arrives.
     turnDone: row.turn_done !== false,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
@@ -42,11 +46,11 @@ export function toIncident(row) {
   return {
     ...toSummary(row),
     description: row.description ?? null,
-    report: row.report ?? null,
+    diagnosis: row.diagnosis ?? null,
+    resolution: row.resolution ?? null,
     pendingAction: row.pending_action ?? null,
-    turnIds: row.turn_ids ?? [],
-    lastTurnId: row.last_turn_id ?? null,
-    lastEventAt: iso(row.last_event_at),
+    sessionId: row.session_id ?? null,
+    createdAt: iso(row.created_at),
   };
 }
 

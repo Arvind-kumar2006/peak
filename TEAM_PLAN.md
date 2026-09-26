@@ -167,14 +167,19 @@ and never commits, giving `db-mcp` a second independent source of evidence.
 
 **Done so far:** backend runs end to end against a scripted fake agent
 (`TRUEFORGE_MODE=fake`), so the whole approve flow is demoable before the core
-lands. 39 tests over the status state machine, report parser and event mapper.
-Dashboard verified in-browser: trigger → investigate → gate → approve → resolved.
-Switching to the real runtime is one env var.
+lands. 38 tests over the status state machine, report parsers and event mapper.
+Dashboard verified in-browser: trigger → investigate → submit diagnosis → gate →
+approve → submit resolution → resolved, with `ruledOut`, evidence, the agent's own
+before/after measurements, and follow-up all rendering. Reject path verified too.
 
-**Blocked on:** Neon `PEAK_DATABASE_URL` (memory store until then), P1's
-`ADMIN_TOKEN` and a reachable demo app (metrics fall back to labelled synthetic
-data), and P3's answer on where the pending tool call's **name + args** live
-(`mapper.js` handles several shapes and degrades gracefully meanwhile).
+Uses P3's `agent/lib/trueforge-client.mjs` per `contracts/backend-api.md`, so
+model-provider fallback comes with it. Because that client is blocking, the
+investigation and the decision run as background tasks and the poller derives
+state — the endpoints still return immediately, as the contract requires.
+
+**Blocked on:** Neon `PEAK_DATABASE_URL` (memory store until then) and P1's
+`ADMIN_TOKEN` + a reachable demo app (metrics fall back to labelled synthetic
+data, so the chart works but shows a flat line until :3000 is up).
 
 **Deliverable by ~6h:** dashboard renders a fake incident end to end; Approve button hits the backend. ✅
 

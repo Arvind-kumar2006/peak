@@ -1,135 +1,178 @@
-// Real TrueForge adapter (v0.2.1). All shapes here come from
-// contracts/trueforge.md, which P3 verified against a running instance.
+// Real TrueForge adapter — a thin wrapper over P3's client.
 //
-// Everything is wrapped in `{ data: ... }` on the way out, and the event list
-// `limit` is capped at 100 — both documented gotchas, both handled here so no
-// other file has to know.
+// contracts/backend-api.md says to use `agent/lib/trueforge-client.mjs` rather
+// than calling TrueForge directly, and that is the right call: it already does
+// model-provider fallback, which is the difference between a demo riding out a
+// provider outage and a demo dying on one. So this file adds no HTTP of its own.
+//
+// What it does add is the read path. P3's `getReports` and `getPendingAction`
+// each re-fetch the whole session event list internally, so calling both on
+// every 1.5s poll would fetch it four times per tick. Here we fetch the event
+// list once and only re-derive when it has actually changed.
 
+// Path note: this file is backend/src/trueforge/real.js, so P3's modules under
+// agent/ are three levels up. backend/ has no dependency on agent/ in
+// package.json — these are plain ESM files with no external imports, which is
+// what makes reaching across safe.
+import { providersFromEnv } from '../../../agent/lib/providers.mjs';
+import { createClient } from '../../../agent/lib/trueforge-client.mjs';
+import { buildAgentSpec, incidentPrompt, AGENT_NAME, MCP_SERVERS } from '../../../agent/agent-spec.mjs';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { TrueforgeError } from './adapter.js';
-
-const BASE = () => `${config.trueforge.url}/api/v1`;
-
-async function api(method, path, body) {
-  const url = `${BASE()}${path}`;
-  let res;
-  try {
-    res = await fetch(url, {
-      method,
-      headers: { 'content-type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(config.trueforge.requestTimeoutMs),
-    });
-  } catch (err) {
-    // Network-level failure: TrueForge is down or restarting. Distinct from an
-    // API error because the poller wants to retry rather than mark the incident
-    // errored.
-    throw new TrueforgeError(`TrueForge unreachable at ${url}: ${err.message}`, { path });
-  }
-
-  const text = await res.text();
-  if (!res.ok) {
-    throw new TrueforgeError(`TrueForge ${method} ${path} → ${res.status}: ${text.slice(0, 300)}`, {
-      status: res.status,
-      path,
-    });
-  }
-  return text ? JSON.parse(text) : null;
-}
+import { extractDiagnosis, extractResolution } from '../domain/report.js';
+import { pendingActionFrom } from './mapper.js';
 
 export function createRealAdapter() {
+  const providers = providersFromEnv();
+  const tf = createClient({
+    baseUrl: config.trueforge.url,
+    providers,
+    log: (msg) => logger.info(`[p3-client] ${msg}`),
+  });
+
+  /** sessionId -> { paused, eventCount } so we only re-derive when events move. */
+  const cache = new Map();
+
+  /**
+   * Reconstruct the handle needed to approve, from the event log alone.
+   *
+   * P3's client returns `paused` from `tf.start()`. Holding that in memory
+   * would mean a backend restart mid-incident could never approve it, and
+   * `tool.approval_required` carries everything needed: thread id and the
+   * pending tool call ids.
+   */
+  function pausedFrom(events) {
+    const gate = [...events].reverse().find((e) => e?.type === 'tool.approval_required');
+    if (!gate) return null;
+    return {
+      kind: 'approval',
+      turnId: gate.turn_id ?? null,
+      threadId: gate.thread_id ?? null,
+      toolCalls: gate.tool_calls ?? [],
+    };
+  }
+
+  /** True once the session's last turn has reported turn.done. */
+  function turnDoneFrom(events) {
+    return events.some((e) => e?.type === 'turn.done');
+  }
+
+  function turnStatusFrom(events) {
+    const done = [...events].reverse().find((e) => e?.type === 'turn.done');
+    return done?.state?.status ?? null;
+  }
+
+  /**
+   * The read path. One event fetch, then derived state.
+   *
+   * `getPendingAction` and `getReports` are P3's functions and we use them as
+   * intended — just not on a tick where nothing changed.
+   */
+  async function readState({ sessionId }) {
+    const events = await tf.listSessionEvents(sessionId);
+    const entry = cache.get(sessionId);
+    const changed = !entry || entry.eventCount !== events.length;
+
+    if (!changed) {
+      return { ...entry.state, events, eventCount: events.length };
+    }
+
+    const paused = pausedFrom(events);
+    let pendingAction = null;
+    let diagnosis = null;
+    let resolution = null;
+
+    if (paused) {
+      const actions = await tf.getPendingAction({ id: sessionId }, paused);
+      pendingAction = pendingActionFrom(actions);
+    }
+    const reports = await tf.getReports(sessionId);
+    diagnosis = extractDiagnosis(reports.diagnosis);
+    resolution = extractResolution(reports.resolution);
+
+    const state = {
+      paused,
+      pendingAction,
+      diagnosis,
+      resolution,
+      turnDone: turnDoneFrom(events),
+      turnStatus: turnStatusFrom(events),
+    };
+    cache.set(sessionId, { eventCount: events.length, state });
+    return { ...state, events, eventCount: events.length };
+  }
+
+  /**
+   * Run something in the background and report failures through `onError`.
+   *
+   * P3's client blocks for the length of a turn — up to five minutes — and
+   * `tf.approve` blocks for the whole 60s verification window. Neither can sit
+   * inside an HTTP handler.
+   */
+  function background(label, sessionId, work, onUpdate) {
+    void (async () => {
+      try {
+        const result = await work();
+        onUpdate?.({ ok: true, result });
+        logger.info(`[p3-client] ${label} finished`, { sessionId, kind: result?.kind });
+      } catch (err) {
+        logger.error(`[p3-client] ${label} failed`, { sessionId, err: err.message });
+        onUpdate?.({ ok: false, error: err.message });
+      } finally {
+        // Force the next read to re-derive, whatever happened.
+        cache.delete(sessionId);
+      }
+    })();
+  }
+
   return {
     mode: 'real',
 
-    async createSession({ incidentId, description }) {
-      // P3 registers the agent by name; TRUEFORGE_AGENT_NAME makes that a config
-      // change rather than a code change if the name differs.
-      const { data } = await api('POST', '/sessions', {
-        agent: { name: config.trueforge.agentName },
-        metadata: { incidentId },
+    async ensureReady() {
+      await tf.registerProviders();
+      for (const server of MCP_SERVERS) {
+        await tf.registerMcpServer({ name: server.name, url: server.url, description: server.description });
+      }
+      logger.info('registered providers and MCP servers', {
+        providers: providers.map((p) => p.name),
+        mcpServers: MCP_SERVERS.map((s) => s.name),
       });
-      logger.info('session created', { sessionId: data.id, incidentId, description });
-      return { sessionId: data.id };
     },
 
-    async startTurn({ sessionId, input, previousTurnId }) {
-      const payload = { stream: false, input };
-      if (previousTurnId) payload.previous_turn_id = previousTurnId;
-      const { data } = await api('POST', `/sessions/${sessionId}/turns`, payload);
-      return { turnId: data.id };
+    async createSession({ incidentId, description }) {
+      // P3 owns the AgentSpec and the prompt. The scenario tag is deliberately
+      // not passed to the model — the agent has to find the cause from evidence
+      // (see incidentPrompt in agent/agent-spec.mjs).
+      const session = await tf.createSession(buildAgentSpec(), { incidentId });
+      cache.delete(session.id);
+      logger.info('session created', { sessionId: session.id, incidentId, description });
+      return { sessionId: session.id, session };
     },
 
-    /**
-     * Fetch a turn's events, paging past the 100-event cap.
-     *
-     * A full investigation comfortably exceeds 100 events. Trusting a single
-     * page would silently truncate the evidence trail — and the tail is exactly
-     * where the approval request and the final report live, so we would look
-     * broken precisely when the demo matters most.
-     *
-     * The cursor shape is undocumented, so we page by offset and stop as soon as
-     * a page yields no ids we haven't already seen. If `offset` is ignored, we
-     * detect the repeat instead of looping forever.
-     */
-    async getTurnEvents({ sessionId, turnId }) {
-      const size = config.trueforge.eventPageSize;
-      const seen = new Set();
-      const events = [];
-
-      for (let offset = 0; offset < 2000; offset += size) {
-        const sep = offset === 0 ? '?' : '&';
-        const { data } = await api(
-          'GET',
-          `/sessions/${sessionId}/turns/${turnId}/events?limit=${size}${sep}offset=${offset}`,
-        );
-        const page = Array.isArray(data) ? data : [];
-        if (page.length === 0) break;
-
-        let fresh = 0;
-        for (const event of page) {
-          const key = event?.id ?? JSON.stringify(event);
-          if (seen.has(key)) continue;
-          seen.add(key);
-          events.push(event);
-          fresh++;
-        }
-        // No new ids => the offset parameter isn't doing anything. Stop rather
-        // than spin.
-        if (fresh === 0) break;
-        if (page.length < size) break;
-      }
-
-      logger.debug('fetched turn events', { sessionId, turnId, count: events.length });
-      return events;
+    startInvestigation({ session, description, onUpdate }) {
+      background('investigation', session.id, () => tf.start(session, incidentPrompt({ description })), onUpdate);
     },
 
-    async sendToolApproval({ sessionId, turnId, threadId, toolCallId, status, reason }) {
-      const approval =
-        status === 'allow' ? { status: 'allow' } : { status: 'deny', reason: reason || 'Rejected by operator' };
-      const input = [
-        {
-          type: 'user.tool_approval',
-          thread_id: threadId,
-          tool_call_id: toolCallId,
-          approval,
-        },
-      ];
-      // Chained to the paused turn — that is how TrueForge resumes a turn that
-      // stopped on the approval gate.
-      return this.startTurn({ sessionId, input, previousTurnId: turnId });
+    submitDecision({ sessionId, decision, reason, onUpdate }) {
+      background('decision', sessionId, async () => {
+        // Re-attach: the process may have restarted since the incident opened.
+        const session = await tf.loadSession(sessionId);
+        const events = await tf.listSessionEvents(sessionId);
+        const paused = pausedFrom(events);
+        if (!paused) throw new Error('No tool call is waiting for approval on this session.');
+        return decision === 'allow'
+          ? tf.approve(session, paused)
+          : tf.reject(session, paused, reason);
+      }, onUpdate);
     },
 
-    async cancelSession({ sessionId }) {
-      try {
-        await api('POST', `/sessions/${sessionId}/cancel`, {});
-      } catch (err) {
-        logger.warn('cancel failed (ignoring)', { sessionId, err: err.message });
-      }
-    },
+    readState,
 
     sessionUrl(sessionId) {
       return `${config.trueforge.url}/sessions/${sessionId}`;
     },
+
+    agentName: AGENT_NAME,
   };
 }

@@ -1,4 +1,4 @@
-// Single place where TrueForge events become incident state.
+// Single place where the agent's session state becomes incident state.
 //
 // Both the background poller and the approve/reject routes call `syncIncident`.
 // The routes need it too: pressing Approve should flip the badge to
@@ -8,20 +8,20 @@
 
 import { logger } from '../logger.js';
 import { getAdapter } from '../trueforge/adapter.js';
-import { extractPendingAction, normaliseEvent } from '../trueforge/mapper.js';
+import { normaliseEvent } from '../trueforge/mapper.js';
 import { deriveStatus, detectStall } from '../domain/status.js';
 import { toIncident } from '../domain/incident.js';
 
 export async function syncIncident({ store, incidentId }) {
   const row = await store.getIncident(incidentId);
   if (!row) return null;
-  if (!row.last_turn_id) return toIncident(row);
+  if (!row.session_id) return toIncident(row);
 
   const adapter = await getAdapter();
-  const raw = await adapter.getTurnEvents({ sessionId: row.session_id, turnId: row.last_turn_id });
+  const state = await adapter.readState({ sessionId: row.session_id });
 
-  const events = raw.map((e, i) => normaliseEvent(e, i));
-  const inserted = await store.appendEvents(incidentId, row.last_turn_id, events);
+  const events = (state.events ?? []).map((e, i) => normaliseEvent(e, i));
+  const inserted = await store.appendEvents(incidentId, events);
 
   // The decision row, not the event log, is the record of "a human pressed a
   // button". The event log alone can't distinguish an approved action from one
@@ -30,24 +30,32 @@ export async function syncIncident({ store, incidentId }) {
   const decisions = await store.listDecisions(incidentId);
   const decision = decisions.length ? decisions[decisions.length - 1].decision : null;
 
-  const derived = deriveStatus({ events: raw, decision });
-  const pending = extractPendingAction(raw);
+  // A failure inside a background task is reported through the adapter, not
+  // thrown, so it surfaces as `error` rather than vanishing into a log.
+  const derived = deriveStatus({
+    paused: state.paused,
+    diagnosis: state.diagnosis,
+    resolution: state.resolution,
+    turnDone: state.turnDone,
+    turnStatus: state.turnStatus,
+    decision,
+    error: row.error && !state.turnDone ? row.error : null,
+  });
+
   const lastEventAt = events.at(-1)?.at ?? row.last_event_at;
-  const turnDone = raw.find((e) => e?.type === 'turn.done');
 
   const updated = await store.updateIncident(incidentId, {
     status: derived.status,
-    report: derived.report ?? row.report ?? null,
+    diagnosis: state.diagnosis ?? row.diagnosis ?? null,
+    resolution: state.resolution ?? row.resolution ?? null,
     // Keep the last known pending action visible while executing, so the card
     // can still show what was approved and what it was called with.
-    pendingAction: pending ?? row.pending_action ?? null,
-    error: derived.status === 'error' ? (turnDone?.state?.message ?? row.error ?? null) : null,
+    pendingAction: state.pendingAction ?? row.pending_action ?? null,
     lastEventAt,
     stalled: detectStall({ lastEventAt }),
-    // Note this is about the *turn*, not the incident. A rejected incident still
-    // has a turn that owes us a report, and the poller keys off this to know
-    // when it is finally safe to stop.
-    turnDone: Boolean(turnDone),
+    // About the *turn*, not the incident. A rejected incident is terminal while
+    // its turn is still running and still owes us a Resolution.
+    turnDone: Boolean(state.turnDone),
   });
 
   if (inserted > 0) {
@@ -56,7 +64,9 @@ export async function syncIncident({ store, incidentId }) {
       status: derived.status,
       newEvents: inserted,
       totalEvents: events.length,
-      pendingTool: pending?.tool ?? null,
+      hasDiagnosis: Boolean(state.diagnosis),
+      hasResolution: Boolean(state.resolution),
+      pendingTool: state.pendingAction?.tool ?? null,
     });
   }
   return toIncident(updated);

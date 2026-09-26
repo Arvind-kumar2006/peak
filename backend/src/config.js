@@ -33,7 +33,16 @@ const num = (v, d) => {
   return Number.isFinite(n) ? n : d;
 };
 
-const oneOf = (v, allowed, d) => (allowed.includes(v) ? v : d);
+const oneOf = (v, allowed, d) => {
+  if (v === undefined || v === null || v === '') return d;
+  if (allowed.includes(v)) return v;
+  // Warn rather than silently defaulting. A typo in a mode name should not
+  // turn into a confusing behaviour difference ten minutes before a demo.
+  console.warn(
+    `[config] "${v}" is not one of ${allowed.join(' | ')} — falling back to "${d}".`,
+  );
+  return d;
+};
 
 export const config = {
   port: num(process.env.PORT, 4000),
@@ -47,14 +56,23 @@ export const config = {
     // auto resolves at boot: use the real runtime when it answers, otherwise
     // fall back to the scripted fake. This is what lets the dashboard be built
     // and demoed before P3's agent exists, with zero code changes later.
-    mode: oneOf(process.env.TRUIFORGE_MODE, ['auto', 'real', 'fake'], 'auto'),
+    // NOTE: this was briefly spelled TRUIFORGE_MODE, and earlier drafts of the
+    // docs used that. Both are accepted so nobody who copied one gets silently
+    // ignored — and an unrecognised value now warns instead of quietly
+    // defaulting, because "I asked for real and got the fake" is the kind of
+    // thing you find out about during a demo.
+    mode: oneOf(
+      process.env.TRUEFORGE_MODE ?? process.env.TRUIFORGE_MODE,
+      ['auto', 'real', 'fake'],
+      'auto',
+    ),
+    // Only used for display. The AgentSpec and the prompt come from P3
+    // (agent/agent-spec.mjs) so the backend and the agent can't drift apart.
     agentName: process.env.TRUEFORGE_AGENT_NAME || 'incident-investigator',
+    // How often the background poller reads session state. The dashboard polls
+    // us every 2s, so this is faster: a 2s dashboard poll should never show a
+    // status that is already stale.
     pollIntervalMs: num(process.env.POLL_INTERVAL_MS, 1500),
-    // TrueForge caps the event list `limit` at 100 (contracts/trueforge.md).
-    // A real investigation exceeds that, so we page rather than silently losing
-    // the tail of the evidence trail.
-    eventPageSize: 100,
-    requestTimeoutMs: num(process.env.TRUEFORGE_TIMEOUT_MS, 15000),
   },
 
   demoApp: {

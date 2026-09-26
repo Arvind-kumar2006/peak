@@ -30,13 +30,22 @@ The detail column is arranged as an argument, top to bottom:
 
 1. **Status** — what is happening right now
 2. **Proposed action + Approve/Reject** — the human gate
-3. **Diagnosis** — root cause, category, confidence
+3. **Diagnosis** — root cause, category, confidence, *what it ruled out*
 4. **Evidence** — each claim beside the tool that produced it
 5. **Metrics** — before/after with the approval moment marked
-6. **Event trail** — the raw runtime log, collapsed
+6. **Resolution** — the agent's verdict, its own measurements, follow-up
+7. **Event trail** — the raw runtime log, collapsed
 
 A judge should be able to read it top to bottom without the layout raising a
 question the answer isn't already on screen for.
+
+Two fields earn their space specifically:
+
+- **`ruledOut`** gets its own block, visually recessed. It is the answer to "how
+  do I know this isn't a guess" — the agent is showing you what it considered
+  and discarded, not just what it kept.
+- **`followUp`** closes the loop. Without it the demo ends on "resolved" and
+  the obvious next question is "so what now?"
 
 ## Decisions worth knowing
 
@@ -78,17 +87,24 @@ src/
     StatusBadge.jsx       status -> colour/label, in one place
     IncidentFeed.jsx      left column + scenario buttons
     IncidentDetail.jsx    right column
-    Diagnosis.jsx         root cause + evidence list
+    Diagnosis.jsx         DiagnosisCard, ResolutionCard, EvidenceList
     PendingActionCard.jsx the approval gate
     MetricsChart.jsx      hand-rolled SVG before/after
     LiveStrip.jsx         live service vitals
   styles.css              one file, CSS variables, dark, large type
 ```
 
+The field names follow `contracts/backend-api.md`: `diagnosis` (present from
+`awaiting_approval`) and `resolution` (present at the end). An earlier contract
+revision had a single `report`; these components match the current one.
+
 ## Empty and edge states, on purpose
 
 - No incidents → tells you to trigger one.
-- Selected incident resolved → full report, chart, and the operator's decision.
-- Selected incident still wrapping up after a reject → says so, rather than
-  freezing on "rejected" with no explanation.
+- Diagnosis received but no approval yet → says "the agent is still working",
+  because the agent submits its diagnosis *before* asking to act.
+- Resolved → the agent's own before/after measurements, the chart, the decision,
+  and the follow-up.
+- Rejected, agent still wrapping up → says so, rather than freezing on
+  "rejected" with no explanation.
 - Backend down → a banner naming the port, not a blank page.

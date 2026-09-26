@@ -1,5 +1,13 @@
 // /api/incidents — the contract in contracts/backend-api.md.
 //
+// One shape note that explains most of this file: P3's client is *blocking*.
+// `tf.start()` returns when the turn pauses for approval or finishes, and
+// `tf.approve()` returns after the agent has watched its 60s recovery window.
+// So neither can sit inside a request handler — the route records the incident,
+// kicks off a background task, and returns. The poller picks up the result.
+// That is why `POST /api/incidents` responds immediately with `investigating`,
+// exactly as the contract says it should.
+//
 // Design rule for every handler here: **the dashboard must never see a bare
 // 500.** An incident is a record of something going wrong; returning an opaque
 // failure while the UI shows "error" with no explanation is the least useful
@@ -11,40 +19,11 @@ import { config, SCENARIOS } from '../config.js';
 import { logger } from '../logger.js';
 import { getAdapter } from '../trueforge/adapter.js';
 import { newIncidentId, toIncident, toSummary } from '../domain/incident.js';
-import { STATUS } from '../domain/status.js';
+import { INITIAL_STATUS, STATUS } from '../domain/status.js';
 import { syncIncident } from '../services/sync.js';
 
 export function createIncidentsRouter({ store, demoApp, poller }) {
   const router = express.Router();
-
-  /**
-   * The investigation prompt.
-   *
-   * The agent's own instructions live in P3's SKILL.md; this is the *task*
-   * message, and it deliberately restates the safety contract rather than
-   * assuming the model remembers it: one action, human approval, verify after.
-   */
-  function investigationPrompt({ scenario, description }) {
-    const lines = [
-      'PRODUCTION INCIDENT — demo-app (deployed on Render).',
-      '',
-      `Observed: ${description}`,
-      '',
-      'Investigate and fix. Requirements:',
-      '- Gather evidence with the read-only tools (service status, metrics, pool stats, recent commits, recent errors).',
-      '- Every claim in your report must cite the tool that produced it.',
-      '- Decide whether the cause is code-level (a recent deploy) or infra-level (no relevant deploy).',
-      '- Propose exactly ONE whitelisted action. The runtime will pause for human approval before it runs.',
-      '- After the action runs, verify with get_metrics_window over a 60s window and set `phase` to resolved, mitigated, or not_resolved.',
-    ];
-    if (scenario) {
-      lines.push(
-        '',
-        `Operator hint: the injected scenario is "${scenario}". Treat it as a hint about what was done, not as the diagnosis — confirm it from tool evidence before you conclude anything.`,
-      );
-    }
-    return lines.join('\n');
-  }
 
   // POST /api/incidents — inject a scenario, open a session, start the turn.
   router.post('/', asyncHandler(async (req, res) => {
@@ -58,25 +37,26 @@ export function createIncidentsRouter({ store, demoApp, poller }) {
       });
     }
 
-    // The description is what the agent sees, and what the fake adapter matches
-    // on, so make sure the scenario name is always in it.
+    // The description is what the agent sees. The scenario tag is recorded here
+    // but deliberately NOT put in the prompt — P3's incidentPrompt keeps it away
+    // from the model so the agent has to find the cause from evidence rather
+    // than being told the answer.
     const described = [description, scenario ? `scenario=${scenario}` : null].filter(Boolean).join(' · ');
-
-    // One id, generated up front: TrueForge session metadata carries the
-    // incidentId, so the two must agree or the session can't be traced back to
-    // the incident in the UI.
-    const id = newIncidentId();
 
     // Inject first, and don't fail the request if it fails. The point of the
     // incident is to investigate the app; if the app is down we still want the
-    // investigation, and the note below says so on the dashboard.
+    // investigation, and a timeline entry says so.
     let inject = { ok: true, result: null };
     if (scenario) inject = await demoApp.inject(scenario);
 
-    let sessionId = null;
+    // One id up front: TrueForge session metadata carries the incidentId, so
+    // the two must agree or the session can't be traced back from the UI.
+    const id = newIncidentId();
+    const adapter = await getAdapter();
+
+    let session;
     try {
-      const adapter = await getAdapter();
-      ({ sessionId } = await adapter.createSession({ incidentId: id, description: described }));
+      session = await adapter.createSession({ incidentId: id, description: described });
     } catch (err) {
       logger.error('could not create a session', { err: err.message });
       return res.status(502).json({
@@ -85,52 +65,56 @@ export function createIncidentsRouter({ store, demoApp, poller }) {
       });
     }
 
-    const adapter = await getAdapter();
     const created = await store.createIncident({
       id,
-      sessionId,
+      sessionId: session.sessionId,
       scenario: scenario ?? null,
       description: described,
-      status: STATUS.INVESTIGATING,
-      trueforgeUrl: adapter.sessionUrl(sessionId),
+      status: INITIAL_STATUS,
+      trueforgeUrl: adapter.sessionUrl(session.sessionId),
     });
 
+    // Kick off the investigation. It runs for as long as the agent needs; the
+    // poller and the dashboard watch it from here.
     try {
-      const { turnId } = await adapter.startTurn({
-        sessionId,
-        input: [{ type: 'user.message', content: investigationPrompt({ scenario, description }) }],
+      adapter.startInvestigation({
+        session: session.session ?? { id: session.sessionId },
+        sessionId: session.sessionId,
+        description: described,
+        onUpdate: ({ ok, error }) => {
+          if (!ok) {
+            // Recorded on the incident, so the dashboard shows the reason
+            // instead of an incident stuck at `investigating` forever.
+            store.updateIncident(id, { error: `Investigation failed: ${error}` }).catch(() => {});
+          }
+          poller.forgive(id);
+          poller.tick().catch(() => {});
+        },
       });
-      const withTurn = await store.updateIncident(id, {
-        lastTurnId: turnId,
-        turnIds: [...(created.turn_ids ?? []), turnId],
-      });
-
-      // A failed injection belongs in the timeline, not in a field nobody
-      // reads. It also explains to anyone watching the demo why the app's
-      // metrics might not move.
-      if (!inject.ok) {
-        await store.appendEvents(id, turnId, [
-          {
-            eventId: `local_inject_failed_${id}`,
-            type: 'demo.inject_failed',
-            at: new Date().toISOString(),
-            payload: { message: `Demo app unreachable, scenario not injected: ${inject.error}` },
-          },
-        ]);
-      }
-
-      // Kick the poller so the first events land immediately instead of up to
-      // one poll interval later. Makes the demo feel instant.
-      poller.tick().catch(() => {});
-      return res.status(201).json(toIncident(withTurn));
     } catch (err) {
-      logger.error('could not start the investigation turn', { incidentId: id, err: err.message });
+      logger.error('could not start the investigation', { incidentId: id, err: err.message });
       const failed = await store.updateIncident(id, {
         status: STATUS.ERROR,
-        error: `Could not start the investigation turn: ${err.message}`,
+        error: `Could not start the investigation: ${err.message}`,
       });
       return res.status(502).json(toIncident(failed));
     }
+
+    if (!inject.ok) {
+      await store.appendEvents(id, [
+        {
+          eventId: `local_inject_failed_${id}`,
+          type: 'demo.inject_failed',
+          at: new Date().toISOString(),
+          payload: { message: `Demo app unreachable, scenario not injected: ${inject.error}` },
+        },
+      ]);
+    }
+
+    // Kick the poller so the first events land immediately rather than up to
+    // one poll interval later. Makes the demo feel instant.
+    poller.tick().catch(() => {});
+    return res.status(201).json(toIncident(await store.getIncident(id) ?? created));
   }));
 
   // GET /api/incidents — newest first, summary shape only.
@@ -210,37 +194,8 @@ export function createIncidentsRouter({ store, demoApp, poller }) {
     const reason = typeof req.body?.reason === 'string' ? req.body.reason : null;
     const adapter = await getAdapter();
 
-    let resumeTurnId;
-    try {
-      // The decision is delivered as the input to a NEW turn chained to the
-      // paused one. That new turn id must become the incident's last_turn_id —
-      // otherwise the poller keeps re-reading the turn that is already paused
-      // and the incident sits in `executing` forever.
-      ({ turnId: resumeTurnId } = await adapter.sendToolApproval({
-        sessionId: row.session_id,
-        // Chain to the paused turn — that is how TrueForge resumes a turn that
-        // stopped on the approval gate.
-        turnId: row.last_turn_id,
-        threadId: pending.threadId,
-        toolCallId: pending.toolCallId,
-        status: decision,
-        reason,
-      }));
-    } catch (err) {
-      logger.error('approval failed', { incidentId: row.id, decision, err: err.message });
-      return res.status(502).json({
-        error: 'approval_failed',
-        message: `Could not send the decision to the agent runtime: ${err.message}`,
-      });
-    }
-
-    if (resumeTurnId) {
-      await store.updateIncident(row.id, {
-        lastTurnId: resumeTurnId,
-        turnIds: [...(row.turn_ids ?? []), resumeTurnId],
-      });
-    }
-
+    // Record the human's decision *before* dispatching it, so the badge moves
+    // immediately and so the audit row exists even if the dispatch fails.
     await store.recordDecision({
       incidentId: row.id,
       decision,
@@ -249,6 +204,29 @@ export function createIncidentsRouter({ store, demoApp, poller }) {
       tool: pending.tool,
       args: pending.args,
     });
+
+    try {
+      adapter.submitDecision({
+        sessionId: row.session_id,
+        decision,
+        reason,
+        onUpdate: ({ ok, error }) => {
+          if (!ok) {
+            store
+              .updateIncident(row.id, { error: `Could not ${decision === 'allow' ? 'execute the action' : 'reject'}: ${error}` })
+              .catch(() => {});
+          }
+          poller.forgive(row.id);
+          poller.tick().catch(() => {});
+        },
+      });
+    } catch (err) {
+      logger.error('dispatching the decision failed', { incidentId: row.id, err: err.message });
+      return res.status(502).json({
+        error: 'approval_failed',
+        message: `Could not send the decision to the agent runtime: ${err.message}`,
+      });
+    }
 
     poller.forgive(row.id);
     // Recompute now rather than waiting for the next tick, so the button's

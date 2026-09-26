@@ -27,7 +27,7 @@ const W = 720;
 const H = 220;
 const PAD = { top: 16, right: 16, bottom: 26, left: 52 };
 
-export function MetricsChart({ samples = [], decisionAt, report }) {
+export function MetricsChart({ samples = [], decisionAt, resolution }) {
   const [metricKey, setMetricKey] = useState('errorRate');
   const metric = METRICS.find((m) => m.key === metricKey) ?? METRICS[0];
 
@@ -140,9 +140,7 @@ export function MetricsChart({ samples = [], decisionAt, report }) {
                 {after === null ? '—' : metric.format(after)}
               </span>
             </div>
-            {report?.verification?.verdict && (
-              <p className="verdict">{report.verification.verdict}</p>
-            )}
+            {resolution?.reasoning && <p className="verdict">{resolution.reasoning}</p>}
           </div>
         </>
       )}

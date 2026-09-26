@@ -25,12 +25,12 @@ export function createPoller({ store }) {
     running = true;
     try {
       const incidents = await store.listIncidents({ limit: 50 });
-      // Poll while the incident is active, OR while its current turn is still
-      // running. The second clause matters for Reject: the incident becomes
-      // terminal the moment a human says no, but the agent's wrap-up turn is
-      // still running and still owes us the report that explains the refusal.
+      // Poll while the incident is active, OR while its turn is still running.
+      // The second clause matters for Reject: the incident becomes terminal the
+      // moment a human says no, but the agent's wrap-up turn still owes us the
+      // Resolution that explains the refusal.
       const worthPolling = incidents.filter(
-        (i) => i.last_turn_id && (isActive(i.status) || !i.turn_done),
+        (i) => i.session_id && (isActive(i.status) || !i.turn_done),
       );
       if (worthPolling.length === 0) return;
 

@@ -48,11 +48,10 @@ export function createPgStore() {
     async createIncident(row) {
       const { rows } = await q(
         `insert into peak.incidents
-           (id, session_id, turn_ids, last_turn_id, scenario, description, status, trueforge_url)
-         values ($1,$2,$3::jsonb,$4,$5,$6,$7,$8)
+           (id, session_id, scenario, description, status, trueforge_url)
+         values ($1,$2,$3,$4,$5,$6)
          returning *`,
-        [row.id, row.sessionId ?? null, JSON.stringify(row.turnIds ?? []), row.lastTurnId ?? null,
-         row.scenario ?? null, row.description ?? null, row.status, row.trueforgeUrl ?? null],
+        [row.id, row.sessionId ?? null, row.scenario ?? null, row.description ?? null, row.status, row.trueforgeUrl ?? null],
       );
       return rows[0];
     },
@@ -71,19 +70,18 @@ export function createPgStore() {
       // Whitelist rather than interpolating keys: this is the one place a
       // caller-supplied object could otherwise become SQL. The type is declared
       // per column because jsonb columns need an explicit cast from a text
-      // parameter and casting a plain word like 'investigating' to jsonb would
+      // parameter, and casting a plain word like 'investigating' to jsonb would
       // throw at runtime.
       const columns = {
         status: ['status', 'text'],
-        report: ['report', 'jsonb'],
+        diagnosis: ['diagnosis', 'jsonb'],
+        resolution: ['resolution', 'jsonb'],
         pendingAction: ['pending_action', 'jsonb'],
         decision: ['decision', 'text'],
         error: ['error', 'text'],
-        lastTurnId: ['last_turn_id', 'text'],
         lastEventAt: ['last_event_at', 'timestamptz'],
         stalled: ['stalled', 'boolean'],
         turnDone: ['turn_done', 'boolean'],
-        turnIds: ['turn_ids', 'jsonb'],
       };
       const sets = [];
       const values = [id];
@@ -105,32 +103,30 @@ export function createPgStore() {
 
     /**
      * Append events, ignoring ones we already have.
-     * `on conflict do nothing` is what makes re-polling a turn safe: TrueForge
-     * caps pages at 100, so we re-read the same events on every poll by design.
+     * `on conflict do nothing` is what makes re-polling safe: the event list is
+     * paged, so we re-read the same events on every poll by design.
      */
-    async appendEvents(incidentId, turnId, events) {
+    async appendEvents(incidentId, events) {
       if (!events.length) return 0;
       const values = [];
-      const tuples = events.map((e, i) => {
+      const tuples = events.map((e) => {
         const base = values.length;
-        values.push(incidentId, turnId, e.eventId, e.type, JSON.stringify(e.payload ?? null), e.at);
-        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5}::jsonb,$${base + 6})`;
+        values.push(incidentId, e.eventId, e.type, JSON.stringify(e.payload ?? null), e.at);
+        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4}::jsonb,$${base + 5})`;
       });
       const { rowCount } = await q(
-        `insert into peak.incident_events (incident_id, turn_id, event_id, type, payload, at)
+        `insert into peak.incident_events (incident_id, event_id, type, payload, at)
          values ${tuples.join(',')}
-         on conflict (incident_id, turn_id, event_id) do nothing`,
+         on conflict (incident_id, event_id) do nothing`,
         values,
       );
       return rowCount ?? 0;
     },
 
-    async listEvents(incidentId, { limit = 200, turnId } = {}) {
+    async listEvents(incidentId, { limit = 200 } = {}) {
       const { rows } = await q(
-        `select * from peak.incident_events
-         where incident_id = $1 ${turnId ? 'and turn_id = $3' : ''}
-         order by id asc limit $2`,
-        turnId ? [incidentId, limit, turnId] : [incidentId, limit],
+        'select * from peak.incident_events where incident_id = $1 order by id asc limit $2',
+        [incidentId, limit],
       );
       return rows;
     },
