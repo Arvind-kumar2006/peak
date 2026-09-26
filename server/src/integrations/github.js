@@ -69,6 +69,34 @@ export function liveGithub({ token, repo, branch }) {
       return { path, ref: ref ?? branch, content: Buffer.from(f.content, 'base64').toString('utf8') };
     },
 
+    // Commit new contents for existing files on top of `parentSha` (default: the deployed branch's tip).
+    // Keeps each file's mode. Returns the new commit's sha and url; does not move any ref.
+    async commitFiles({ files, message, parentSha }) {
+      const tipSha = parentSha ?? (await gh('GET', `${R}/git/ref/heads/${encodeURIComponent(branch)}`)).object.sha;
+      const tip = await gh('GET', `${R}/git/commits/${tipSha}`);
+      const tree = await gh('GET', `${R}/git/trees/${tip.tree.sha}?recursive=1`);
+      const modes = new Map((tree.tree ?? []).map((e) => [e.path, e.mode]));
+      const entries = Object.entries(files).map(([path, content]) => ({ path, mode: modes.get(path) ?? '100644', type: 'blob', content }));
+      const newTree = await gh('POST', `${R}/git/trees`, { base_tree: tip.tree.sha, tree: entries });
+      const commit = await gh('POST', `${R}/git/commits`, { message, tree: newTree.sha, parents: [tipSha] });
+      return { sha: commit.sha, parentSha: tipSha, url: `https://github.com/${repo}/commit/${commit.sha}` };
+    },
+    // Fast-forward the deployed branch to a commit (fails if someone pushed meanwhile).
+    async moveBranch(sha) {
+      await gh('PATCH', `${R}/git/refs/heads/${encodeURIComponent(branch)}`, { sha, force: false });
+    },
+    async createBranch(name, sha) {
+      await gh('POST', `${R}/git/refs`, { ref: `refs/heads/${name}`, sha });
+    },
+    async openPullRequest({ head, title, body }) {
+      const pr = await gh('POST', `${R}/pulls`, { head, base: branch, title, body });
+      return { number: pr.number, url: pr.html_url };
+    },
+    async getPullRequest(number) {
+      const pr = await gh('GET', `${R}/pulls/${number}`);
+      return { number: pr.number, state: pr.state, merged: !!pr.merged, mergeCommitSha: pr.merge_commit_sha, url: pr.html_url };
+    },
+
     // GitHub has no "revert" endpoint, so build the revert with the Git Data API:
     // take the branch tip's tree and put back the parent's version of every file the
     // target commit touched. Refuses if a later commit changed the same files (would

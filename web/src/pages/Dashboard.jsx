@@ -7,7 +7,7 @@ import { STATUS, SERVICE_STATUS, ago, duration, short } from '../format.js';
 
 const dedupe = (list) => [...new Map(list.map((i) => [i.id, i])).values()];
 
-const OPEN = ['investigating', 'awaiting_approval', 'fixing', 'verifying'];
+const OPEN = ['investigating', 'awaiting_approval', 'fixing', 'awaiting_merge', 'verifying'];
 
 function overall(services, incidents) {
   if (incidents.some((i) => i.status === 'awaiting_approval')) return { tone: 'accent', label: 'Fix waiting for approval' };

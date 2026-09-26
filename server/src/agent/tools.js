@@ -6,7 +6,9 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { adapters } from '../integrations/index.js';
-import { getIncident, getService, listSamples, updateIncident, addEvent } from '../store.js';
+import { getIncident, getService, listSamples, updateIncident, addEvent, transition, getWorkspaceSettings } from '../store.js';
+import { buildPatch, LIMITS } from '../patch.js';
+import { startMergeWatch } from '../merges.js';
 import { checkHealth } from '../health.js';
 import { startVerification } from '../verify.js';
 import { publish } from '../events.js';
@@ -149,7 +151,7 @@ function buildServer() {
     'submit_diagnosis',
     {
       description:
-        'Submit the root-cause diagnosis and proposed fix. Call exactly once, after investigating and BEFORE revert_commit. The human approver reads this next to the Approve button.',
+        'Submit the root-cause diagnosis and proposed fix. Call exactly once, after investigating and BEFORE revert_commit / apply_patch. The human approver reads this next to the Approve button. If a code fix (patch) is rejected by validation, fix the edits and call again.',
       inputSchema: {
         ...id,
         summary: z.string().min(10).describe('One or two sentences: what is broken and why'),
@@ -161,8 +163,19 @@ function buildServer() {
           .describe('The commit that caused it, or null if no commit is responsible'),
         evidence: z.array(z.object({ source: z.string().describe('e.g. sentry, github, health'), detail: z.string() })).min(2),
         proposed_fix: z.object({
-          type: z.enum(['revert_commit', 'none']),
+          type: z.enum(['revert_commit', 'patch', 'none']),
           sha: z.string().min(7).optional().describe('Required for revert_commit'),
+          title: z.string().max(120).optional().describe('For patch: a commit-message style title, e.g. "Send payment_id to the gateway again"'),
+          edits: z
+            .array(
+              z.object({
+                path: z.string().describe('Existing file, repo-relative'),
+                find: z.string().describe('Exact text currently in the file, unique in it (include a few surrounding lines)'),
+                replace: z.string().describe('The new text'),
+              }),
+            )
+            .optional()
+            .describe(`For patch: at most ${LIMITS.files} files and ${LIMITS.changedLines} changed lines`),
           reason: z.string(),
           expected_outcome: z.string().optional(),
         }),
@@ -178,14 +191,20 @@ function buildServer() {
         diagnosis.proposed_fix.sha = c.sha;
         diagnosis.proposed_fix.commit = { sha: c.sha, message: c.message.split('\n')[0], author: c.author, date: c.date, url: c.url, files: c.files.map((f) => f.filename) };
       }
+      if (diagnosis.proposed_fix.type === 'patch') {
+        // Validate against the branch now so the approver sees the real diff; errors go back to the model.
+        const github = requireGithub(ctx);
+        const built = await buildPatch(diagnosis.proposed_fix.edits ?? [], async (path) => (await github.getFile(path)).content);
+        diagnosis.proposed_fix.title ||= 'Fix from PEAK';
+        diagnosis.proposed_fix.preview = { diffs: built.diffs, changedLines: built.changedLines, mode: (await getWorkspaceSettings(ctx.incident.workspaceId)).fixMode };
+      }
       await updateIncident(ctx.incident.id, { diagnosis: { ...diagnosis, submittedAt: new Date().toISOString() } });
-      return {
-        ok: true,
-        next:
-          diagnosis.proposed_fix.type === 'revert_commit'
-            ? `Recorded. Now call revert_commit with sha "${diagnosis.proposed_fix.sha}". It pauses for human approval.`
-            : 'Recorded. No fix proposed: reply with a short summary for the on-call engineer and stop.',
-      };
+      const next = {
+        revert_commit: `Recorded. Now call revert_commit with sha "${diagnosis.proposed_fix.sha}". It pauses for human approval.`,
+        patch: `Recorded (${diagnosis.proposed_fix.preview?.changedLines} changed lines). Now call apply_patch. It pauses for human approval.`,
+        none: 'Recorded. No fix proposed: reply with a short summary for the on-call engineer and stop.',
+      }[diagnosis.proposed_fix.type];
+      return { ok: true, next };
     }),
   );
 
@@ -208,11 +227,61 @@ function buildServer() {
       if (incident.status !== 'fixing') throw new Error(`Incident is ${incident.status}; the fix can no longer be applied`);
 
       const result = await requireGithub(ctx).revertCommit(planned.sha, { reason });
-      const fix = { type: 'revert_commit', targetSha: planned.sha, ...result, appliedAt: new Date().toISOString() };
+      const fix = { type: 'revert_commit', targetSha: planned.sha, commitSha: result.revertSha, ...result, appliedAt: new Date().toISOString() };
       await updateIncident(incident.id, { fix });
       startVerification(incident.id);
       return { ...result, next: 'Fix applied. PEAK is now verifying recovery. Reply with one sentence and stop.' };
     }),
+  );
+
+  server.registerTool(
+    'apply_patch',
+    {
+      description:
+        'Apply the code fix from your diagnosis (proposed_fix.type "patch"). Takes no code: PEAK applies exactly the edits the human approved. Depending on the workspace it opens a pull request or commits to the branch. WRITE ACTION: pauses for human approval.',
+      inputSchema: { ...id, reason: z.string() },
+      annotations: { destructiveHint: true },
+    },
+    tool(
+      'apply_patch',
+      (a, r) => (r.pullRequest ? `Opened pull request #${r.pullRequest.number}` : `Committed fix ${r.commitSha.slice(0, 7)}`),
+      async (ctx, { reason }) => {
+        const { incident } = ctx;
+        const planned = incident.diagnosis?.proposed_fix;
+        if (planned?.type !== 'patch') throw new Error('No code fix was proposed in the diagnosis');
+        if (incident.approval?.decision !== 'approved') throw new Error('This fix has not been approved in PEAK');
+        if (incident.fix) throw new Error('The fix was already applied');
+        if (incident.status !== 'fixing') throw new Error(`Incident is ${incident.status}; the fix can no longer be applied`);
+
+        const github = requireGithub(ctx);
+        // Re-apply the approved edits to the branch as it is now; fails cleanly if the code moved.
+        const built = await buildPatch(planned.edits, async (path) => (await github.getFile(path)).content);
+        const { fixMode } = await getWorkspaceSettings(incident.workspaceId);
+        const message = `${planned.title}\n\n${planned.reason}${reason && reason !== planned.reason ? `\n\n${reason}` : ''}\n\nIncident ${incident.id}: ${incident.title}\nApproved in PEAK by ${incident.approval.by}.`;
+        const base = { type: 'patch', mode: fixMode, files: Object.keys(built.files), appliedAt: new Date().toISOString() };
+
+        if (fixMode === 'push') {
+          const commit = await github.commitFiles({ files: built.files, message });
+          await github.moveBranch(commit.sha);
+          await updateIncident(incident.id, { fix: { ...base, commitSha: commit.sha, url: commit.url, branch: github.describe().branch } });
+          startVerification(incident.id);
+          return { commitSha: commit.sha, url: commit.url, next: 'Fix committed. PEAK is now verifying recovery. Reply with one sentence and stop.' };
+        }
+
+        const head = `peak/fix-${incident.id.replace(/^inc_/, '')}`;
+        const commit = await github.commitFiles({ files: built.files, message });
+        await github.createBranch(head, commit.sha);
+        const pr = await github.openPullRequest({
+          head,
+          title: planned.title,
+          body: `**Incident:** ${incident.title}\n\n**Root cause:** ${incident.diagnosis.root_cause}\n\n**Fix:** ${planned.reason}\n\nProposed by PEAK and approved by ${incident.approval.by}. PEAK verifies recovery after this is merged and deployed.`,
+        });
+        await updateIncident(incident.id, { fix: { ...base, commitSha: commit.sha, url: commit.url, branch: head, pullRequest: pr } });
+        await transition(incident.id, ['fixing'], 'awaiting_merge');
+        startMergeWatch(incident.id);
+        return { pullRequest: pr, commitSha: commit.sha, next: `Pull request #${pr.number} opened. PEAK verifies after it is merged. Reply with one sentence and stop.` };
+      },
+    ),
   );
 
   return server;

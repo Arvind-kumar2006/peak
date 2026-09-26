@@ -25,6 +25,8 @@ export function startVerification(incidentId) {
 async function verify(incidentId) {
   const incident = (await transition(incidentId, ['fixing'], 'verifying')) ?? (await getIncident(incidentId));
   if (incident.status !== 'verifying') return;
+  // The commit that carries the fix: the revert, the pushed patch, or the PR's merge commit.
+  const fixSha = incident.fix.commitSha ?? incident.fix.revertSha;
   const service = await getService(incident.serviceId);
   const { sentry } = await adapters(incident.workspaceId);
   const errorsOn = sentry && service.sentryProject;
@@ -41,19 +43,19 @@ async function verify(incidentId) {
   // 1. Deployment. Only checkable if the health endpoint reports a release.
   const deploy = { release: null, confirmed: false, waitedSec: 0 };
   if (service.healthUrl && service.release) {
-    await addEvent(incidentId, 'verify', 'Waiting for the revert to deploy', { revertSha: incident.fix.revertSha });
+    await addEvent(incidentId, 'verify', 'Waiting for the fix to deploy', { commitSha: fixSha });
     const started = Date.now();
     while (Date.now() - started < config.verify.deployTimeoutSec * 1000) {
       const h = await checkHealth(service.healthUrl);
       deploy.release = h.release ?? deploy.release;
-      if (sameCommit(h.release, incident.fix.revertSha)) {
+      if (sameCommit(h.release, fixSha)) {
         deploy.confirmed = true;
         break;
       }
       await sleep(POLL_MS);
     }
     deploy.waitedSec = Math.round((Date.now() - started) / 1000);
-    await addEvent(incidentId, 'verify', deploy.confirmed ? `Deployed ${deploy.release.slice(0, 7)} after ${deploy.waitedSec}s` : `Revert not seen on the service after ${deploy.waitedSec}s`, deploy);
+    await addEvent(incidentId, 'verify', deploy.confirmed ? `Deployed ${deploy.release.slice(0, 7)} after ${deploy.waitedSec}s` : `Fix not seen on the service after ${deploy.waitedSec}s`, deploy);
   }
 
   // 2. Watch window.
@@ -81,7 +83,7 @@ async function verify(incidentId) {
   const deployOk = !service.release || deploy.confirmed;
   const verdict = errorsOk && healthOk && deployOk ? 'resolved' : 'unresolved';
   const reasons = [
-    !deployOk && 'the revert was not seen running on the service',
+    !deployOk && 'the fix was not seen running on the service',
     !healthOk && 'health checks still fail',
     !errorsOk && `errors are still at ${after.errorsPerMin}/min`,
   ].filter(Boolean);

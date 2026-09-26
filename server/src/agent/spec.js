@@ -1,10 +1,13 @@
 // The incident-investigator AgentSpec. The model is filled in by the TrueForge client
 // (provider fallback order); the MCP server is this PEAK server's /mcp endpoint.
 import { readFileSync } from 'node:fs';
+import { config } from '../config.js';
 
-export const MCP_SERVER_NAME = 'peak';
+// Unique per PEAK server, so two servers sharing one TrueForge (e.g. dev + a test instance)
+// don't overwrite each other's MCP registration.
+export const MCP_SERVER_NAME = process.env.PEAK_MCP_NAME || `peak-${config.port}`;
 // Listed by name so the approval gate never depends on tool annotations being right.
-export const WRITE_TOOLS = ['revert_commit'];
+export const WRITE_TOOLS = ['revert_commit', 'apply_patch'];
 
 export function buildAgentSpec() {
   return {

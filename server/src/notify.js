@@ -12,6 +12,25 @@ export function formatDuration(ms) {
 }
 
 const short = (sha) => (sha ? sha.slice(0, 7) : '');
+
+function proposal(fix) {
+  if (fix?.type === 'patch') {
+    const mode = fix.preview?.mode === 'push' ? 'commit it to the branch' : 'open a pull request';
+    return `Code fix: *${fix.title}* (${fix.preview?.changedLines ?? '?'} changed lines in ${fix.preview?.diffs.map((d) => `\`${d.path}\``).join(', ')}). On approval PEAK will ${mode}.${fix.reason ? `\n${fix.reason}` : ''}`;
+  }
+  return `Revert commit \`${short(fix?.sha)}\`${fix?.reason ? `: ${fix.reason}` : ''}`;
+}
+
+function applied(fix) {
+  if (fix.type === 'patch') return fix.pullRequest ? `Pull request #${fix.pullRequest.number} merged (\`${short(fix.commitSha)}\`).` : `Committed fix \`${short(fix.commitSha)}\`.`;
+  return `Reverted \`${short(fix.targetSha)}\` with commit \`${short(fix.revertSha)}\`.`;
+}
+
+// Slack section text is capped at 3000 characters.
+function clipDiff(diffs) {
+  const text = diffs.map((d) => d.patch).join('\n');
+  return text.length > 2400 ? `${text.slice(0, 2400)}\n… (see PEAK for the full diff)` : text;
+}
 const section = (text) => ({ type: 'section', text: { type: 'mrkdwn', text } });
 
 // Closed by a human ("Mark resolved").
@@ -59,7 +78,8 @@ export function buildMessage(incident, service) {
         section(`🚨 *Production incident*\n*${service.name}*: ${incident.title}`),
         section(`*Root cause*\n${d?.summary ?? 'See PEAK'}`),
         ...(d?.suspect_commit ? [section(`*Likely caused by* commit \`${short(d.suspect_commit.sha)}\`: ${d.suspect_commit.message.split('\n')[0]}`)] : []),
-        section(`*PEAK proposes*\nRevert commit \`${short(fix?.sha)}\`${fix?.reason ? `: ${fix.reason}` : ''}`),
+        section(`*PEAK proposes*\n${proposal(fix)}`),
+        ...(fix?.type === 'patch' && fix.preview ? [section(`\`\`\`${clipDiff(fix.preview.diffs)}\`\`\``)] : []),
         {
           type: 'actions',
           elements: [
@@ -81,7 +101,14 @@ export function buildMessage(incident, service) {
       text = `🛠 ${incident.title}: fix applied, verifying`;
       blocks.push(
         section(`🛠 *Fix approved by ${incident.approval?.by ?? 'a teammate'}*\n*${service.name}*: ${incident.title}`),
-        section(incident.fix ? `Reverted \`${short(incident.fix.targetSha)}\` with commit \`${short(incident.fix.revertSha)}\`. Verifying recovery…` : 'Applying the fix…'),
+        section(incident.fix ? `${applied(incident.fix)} Verifying recovery…` : 'Applying the fix…'),
+      );
+      break;
+    case 'awaiting_merge':
+      text = `🔀 ${incident.title}: fix opened as pull request #${incident.fix?.pullRequest?.number}`;
+      blocks.push(
+        section(`🔀 *Fix approved by ${incident.approval?.by ?? 'a teammate'}: pull request opened*\n*${service.name}*: ${incident.title}`),
+        section(`<${incident.fix.pullRequest.url}|#${incident.fix.pullRequest.number} ${fix?.title ?? 'Fix from PEAK'}> — merge it to ship the fix. PEAK verifies recovery once it is merged and deployed.`),
       );
       break;
     case 'resolved':

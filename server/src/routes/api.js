@@ -12,6 +12,8 @@ import {
   updateService,
   deleteService,
   setMute,
+  getWorkspaceSettings,
+  updateWorkspaceSettings,
   listSamples,
   pageIncidents,
   getIncident,
@@ -53,7 +55,12 @@ function serviceInput(body) {
 }
 
 api.get('/overview', async (req, res) => {
-  const [list, integrations, page] = await Promise.all([listServices(req.workspaceId), listIntegrations(req.workspaceId), pageIncidents(req.workspaceId, { limit: 20 })]);
+  const [list, integrations, page, settings] = await Promise.all([
+    listServices(req.workspaceId),
+    listIntegrations(req.workspaceId),
+    pageIncidents(req.workspaceId, { limit: 20 }),
+    getWorkspaceSettings(req.workspaceId),
+  ]);
   const incidents = page.items;
   const services = await Promise.all(
     list.map(async (s) => ({
@@ -70,9 +77,24 @@ api.get('/overview', async (req, res) => {
     // Cursor for "Load older incidents", fixed when this page was read.
     incidentsNext: page.next,
     agent: agentStatus,
+    settings,
     monitor: config.monitor,
     setupComplete: integrations.every((i) => i.connected) && services.length > 0,
   });
+});
+
+// ——— Workspace settings ———
+// fixMode: 'pr' (approved code fixes open a pull request) | 'push' (commit straight to the branch).
+api.get('/workspace/settings', async (req, res) => res.json(await getWorkspaceSettings(req.workspaceId)));
+api.put('/workspace/settings', async (req, res) => {
+  const patch = {};
+  if (req.body?.fixMode !== undefined) {
+    if (!['pr', 'push'].includes(req.body.fixMode)) throw bad('fixMode must be "pr" or "push"');
+    patch.fixMode = req.body.fixMode;
+  }
+  const settings = await updateWorkspaceSettings(req.workspaceId, patch);
+  publish(req.workspaceId);
+  res.json(settings);
 });
 
 api.get('/stream', (req, res) => subscribe(req.workspaceId, res));

@@ -23,6 +23,7 @@ export const STATUS = {
   investigating: { label: 'Investigating', tone: 'warn' },
   awaiting_approval: { label: 'Awaiting approval', tone: 'accent' },
   fixing: { label: 'Applying fix', tone: 'warn' },
+  awaiting_merge: { label: 'Waiting for merge', tone: 'info' },
   verifying: { label: 'Verifying', tone: 'warn' },
   resolved: { label: 'Resolved', tone: 'good' },
   unresolved: { label: 'Not recovered', tone: 'bad' },
