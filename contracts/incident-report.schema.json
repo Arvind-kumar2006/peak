@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "IncidentReport",
+  "description": "Final structured answer from the investigator agent. Passed to TrueForge as response_format json_schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["phase", "summary", "rootCause", "evidence", "proposedFix", "verification"],
+  "properties": {
+    "phase": {
+      "type": "string",
+      "enum": ["diagnosed", "resolved", "mitigated", "not_resolved", "rejected"],
+      "description": "diagnosed = before any action; the rest = after an action was approved/denied and verified"
+    },
+    "summary": { "type": "string", "description": "One or two sentences for the dashboard headline" },
+    "rootCause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "description", "confidence"],
+      "properties": {
+        "category": { "type": "string", "enum": ["code", "infra", "unknown"] },
+        "description": { "type": "string" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "commitSha": { "type": ["string", "null"], "description": "Offending commit, when category = code" }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim", "tool", "observation"],
+        "properties": {
+          "claim": { "type": "string", "description": "What this evidence supports" },
+          "tool": { "type": "string", "description": "MCP tool that produced it, e.g. db.get_pool_stats" },
+          "observation": { "type": "string", "description": "The concrete value(s) observed" }
+        }
+      }
+    },
+    "proposedFix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "reasoning"],
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["trigger_rollback", "restart_service", "scale_service", "clear_cache", "create_fix_pr", "none"]
+        },
+        "args": { "type": "object" },
+        "reasoning": { "type": "string" },
+        "diff": { "type": ["string", "null"], "description": "Optional code diff when root cause is code-level" }
+      }
+    },
+    "verification": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "null while phase = diagnosed",
+      "properties": {
+        "windowSec": { "type": "number" },
+        "before": { "type": "object", "description": "Key metrics before the action" },
+        "after": { "type": "object", "description": "Key metrics after the action" },
+        "verdict": { "type": "string" }
+      }
+    }
+  }
+}

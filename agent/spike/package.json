@@ -1,0 +1,13 @@
+{
+  "name": "peak-trueforge-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "mcp": "node dummy-mcp.mjs",
+    "spike": "node run-spike.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.0"
+  }
+}

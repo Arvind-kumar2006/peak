@@ -18,12 +18,15 @@
 
 Goal: agree on contracts so all four can work in parallel against mocks.
 
-- [ ] Create repo skeleton (layout below)
-- [ ] Write `contracts/scenarios.md` — both failure scenarios (owner: **P1**, reviewed by all)
-- [ ] Write `contracts/demo-app-api.md` — health/metrics/inject endpoints (owner: **P1**)
-- [ ] Write `contracts/mcp-tools.md` — every tool: name, input, output, read vs write (owner: **P2**)
-- [ ] Write `contracts/incident-report.schema.json` — agent's final output shape (owner: **P3**)
-- [ ] Write `contracts/backend-api.md` — REST endpoints for dashboard (owner: **P4**)
+- [x] Create repo skeleton (layout below)
+- [x] Draft `contracts/scenarios.md` — both failure scenarios (owner: **P1**, review at kickoff)
+- [x] Draft `contracts/demo-app-api.md` — health/metrics/inject endpoints (owner: **P1**, review at kickoff)
+- [x] Draft `contracts/mcp-tools.md` — every tool: name, input, output, read vs write (owner: **P2**, review at kickoff)
+- [x] Draft `contracts/incident-report.schema.json` — agent's final output shape (owner: **P3**, review at kickoff)
+- [x] Draft `contracts/backend-api.md` — REST endpoints for dashboard (owner: **P4**, review at kickoff)
+- [x] TrueForge API verified against v0.2.1 — see `contracts/trueforge.md` (sessions, MCP, approval schema, JSON output, deep links all ✅)
+- [ ] **Run `agent/spike` with a real `ANTHROPIC_API_KEY`** (owner: **P3**, ~10 min) — last unconfirmed step: live approval round-trip
+- [ ] Team reviews all `contracts/` files together, then marks them frozen
 - [ ] **TrueForge spike** (owner: **P3**, in parallel): dummy MCP tool marked dangerous → confirm it pauses → approve it via HTTP → confirm it resumes. **Decision by Hour 2: TrueForge or fallback (Claude Agent SDK / plain tool-use loop + our own approval gate).**
 
 ### Repo layout
@@ -49,6 +52,8 @@ Peak/
 | Scenario B (infra-level) | No recent deploy; memory blowup / stuck cache. Fix: **restart / scale / clear_cache** |
 | Rollback mechanism | Render API rollback to previous deploy (NOT the deploy hook — that redeploys the bad HEAD) |
 | GitHub access | Fine-grained PAT for MVP; GitHub App = stretch goal |
+| MCP transport | All MCP servers = Streamable HTTP at `/mcp` (TrueForge has no stdio support) |
+| TrueForge version | Pin `@0.2.1`; start with `OUTBOUND_URL_ALLOWED_HOSTS='["localhost","127.0.0.1"]'` |
 | GitHub / Sentry MCP | Reuse official servers (read-only toolsets); only build `db-mcp`, `cloud-mcp`, and a small rollback wrapper |
 | "Resolved" definition | Health signal stable over a window (e.g. 60s), not one sample. Symptom-only fixes are reported as **"mitigated"** |
 
