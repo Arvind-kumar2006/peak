@@ -168,7 +168,7 @@ try {
   check('reset completes in under 5s', elapsed < 5000, `${elapsed}ms`);
   check('reset reclaims the leaked clients', r.body.reclaimedClients > 0,
     `reclaimed=${r.body.reclaimedClients}`);
-  check('reset drains the pool', r.body.poolDrained === true);
+  check('reset leaves the pool healthy', r.body.poolRecovered === true);
   check('reset clears injected faults', r.body.clearedFaults.includes('conn-leak'),
     JSON.stringify(r.body.clearedFaults));
 

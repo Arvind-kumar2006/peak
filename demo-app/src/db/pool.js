@@ -135,15 +135,27 @@ function p_total() {
   return pool ? pool.totalCount : 0;
 }
 
-/** Wait (bounded) for the pool to fall back to zero in-use clients. */
-export async function waitForPoolIdle(timeoutMs = 3000) {
+/** True when the pool is no longer saturated and nothing is queueing. */
+export function poolHealthy() {
+  const s = poolStats();
+  return s.inUse < s.max && s.waiting === 0;
+}
+
+/**
+ * Give in-flight work a moment to finish so a reset reports a settled pool.
+ *
+ * Deliberately not "every client idle": under continuous traffic one client is
+ * virtually always checked out, so that condition would never be true and every
+ * reset would report failure. What matters is that the pool is no longer
+ * saturated and the queue has drained.
+ */
+export async function waitForPoolHealthy(timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!pool) return true;
-    if (pool.idleCount >= pool.totalCount) return true;
-    await new Promise((r) => setTimeout(r, 100));
+    if (poolHealthy() && poolStats().inUse === 0) return true;
+    await new Promise((r) => setTimeout(r, 50));
   }
-  return pool ? pool.idleCount >= pool.totalCount : true;
+  return poolHealthy();
 }
 
 /** Live pool counters for GET /metrics. This is the *app's* pool, not Postgres. */

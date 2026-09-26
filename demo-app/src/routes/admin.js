@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { config, scenarios as VALID } from '../config.js';
 import { inject, clearFaults, faults } from '../faults.js';
 import { clearCache } from '../cache.js';
-import { reclaimLeaked, waitForPoolIdle, poolStats } from '../db/pool.js';
+import { reclaimLeaked, waitForPoolHealthy, poolStats } from '../db/pool.js';
 import { snapshot, resetSamples } from '../metrics.js';
 import { logger } from '../logger.js';
 
@@ -50,7 +50,7 @@ export async function reset(_req, res) {
   // period. Safe because faults are already cleared, so no new checkouts are
   // being started against the pool.
   const reclaimed = await reclaimLeaked(0);
-  const drained = await waitForPoolIdle(3000);
+  const poolRecovered = await waitForPoolHealthy(3000);
   const cacheEntries = clearCache();
   resetSamples();
 
@@ -58,7 +58,7 @@ export async function reset(_req, res) {
   logger.warn('reset complete', {
     clearedFaults: cleared,
     reclaimedClients: reclaimed,
-    drained,
+    poolRecovered,
     cacheEntries,
     pool: m.db.pool,
   });
@@ -67,7 +67,7 @@ export async function reset(_req, res) {
     reset: true,
     clearedFaults: cleared,
     reclaimedClients: reclaimed,
-    poolDrained: drained,
+    poolRecovered,
     cacheCleared: cacheEntries,
     pool: poolStats(),
   });
