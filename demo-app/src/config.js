@@ -22,6 +22,15 @@ export const config = {
     // 500s that make Scenario A legible. 2s keeps the symptom chain quick.
     connectionTimeoutMillis: num(process.env.POOL_CONNECT_TIMEOUT_MS, 2000),
     idleTimeoutMillis: num(process.env.POOL_IDLE_TIMEOUT_MS, 10000),
+    // Server-side reaper for transactions stranded by a killed process.
+    //
+    // Must stay comfortably ABOVE POOL_MAX * RECONCILE_INTERVAL_SEC (60s), which
+    // is how long Scenario A takes to saturate the pool. At 60s the reaper would
+    // start killing connections just as the incident peaks, which would flap the
+    // metrics and muddy the evidence the agent is about to reason over. This
+    // timeout exists to clean up orphans left behind by a dead process, not to
+    // interfere with a live one. 5 minutes is well clear of a Render rollback.
+    idleInTransactionTimeoutMs: num(process.env.IDLE_IN_TRANSACTION_TIMEOUT_MS, 300000),
   },
 
   windows: {

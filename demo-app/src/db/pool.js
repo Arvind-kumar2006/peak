@@ -47,6 +47,19 @@ export function getPool() {
     max: config.pool.max,
     connectionTimeoutMillis: config.pool.connectionTimeoutMillis,
     idleTimeoutMillis: config.pool.idleTimeoutMillis,
+    // Server-side backstop for the Scenario A leak.
+    //
+    // Our own reclaimLeaked()/reset path only helps while the process is alive.
+    // If the process is killed while clients are stranded — which is exactly
+    // what a Render rollback does — Postgres keeps the backends in "idle in
+    // transaction" indefinitely, because an idle-in-transaction backend is not
+    // watching for a dead client. Those orphans survive the deploy and consume
+    // the managed DB's connection budget, so the rolled-back deploy can fail to
+    // connect for a reason that has nothing to do with the leak we are demoing.
+    //
+    // 60s is far longer than any query here takes (single-digit ms), so it only
+    // ever fires on genuinely abandoned transactions.
+    options: `-c idle_in_transaction_session_timeout=${config.pool.idleInTransactionTimeoutMs}`,
   });
 
   // A backend disconnect must not take the process down. On Render that would
@@ -70,6 +83,26 @@ export async function acquire() {
   waiting += 1;
   try {
     const client = await p.connect();
+
+    // A checked-out pg.Client with no 'error' listener takes the whole process
+    // down: Node re-emits an unhandled 'error' event as an uncaught exception
+    // ("throw er; // Unhandled 'error' event"). A stranded client that nobody
+    // awaits a query on is exactly that case — when Postgres reaps its
+    // transaction, the DB restarts, or a socket blips mid-incident, the client
+    // emits 'error' and the service dies.
+    //
+    // Surviving an incident is the entire premise of this project, so a
+    // background database hiccup must not become an outage. Every client gets a
+    // listener the moment it is handed out.
+    client.on('error', (err) => {
+      checkedOut.delete(client);
+      logger.error('postgres client error', {
+        error: err.message,
+        code: err.code,
+        inUse: poolStats().inUse,
+      });
+    });
+
     checkedOut.set(client, Date.now());
     return client;
   } catch (err) {

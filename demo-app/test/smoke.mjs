@@ -122,6 +122,7 @@ try {
 
   // ------------------------------------------------------------- scenario A
   await section('2. Scenario A — conn-leak (code-level)');
+  const iitBefore = (await idleInTransaction())?.n ?? 0;
   const injA = await api('/admin/inject/conn-leak', { method: 'POST' });
   check('inject/conn-leak accepted', injA.status === 200 && injA.body.injected === 'conn-leak');
 
@@ -179,9 +180,16 @@ try {
     `inUse=${mA3.body.db.pool.inUse}`);
   const hA3 = await api('/health');
   check('health is ok again after reset', hA3.body.status === 'ok', hA3.body.status);
+
+  // Compare against the pre-leak baseline rather than zero. A SIGKILLed process
+  // can leave orphaned "idle in transaction" backends behind, and those are
+  // Postgres cleaning up after a dead client — not something this run caused.
+  // Asserting an absolute zero makes the test fail for reasons outside the app.
   const iit2 = await idleInTransaction();
   if (iit2) {
-    check('no idle-in-transaction left after reset', iit2.n === 0, `${iit2.n} remaining`);
+    check('reset returns idle-in-transaction to the pre-leak baseline',
+      iit2.n <= iitBefore,
+      `before leak=${iitBefore} after reset=${iit2.n}`);
   }
 
   // ------------------------------------------------------------- scenario B
